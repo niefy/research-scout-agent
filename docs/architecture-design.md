@@ -1,7 +1,7 @@
 # 财经研报 / 论坛帖子研究打分 Agent 系统 — 架构设计
 
-> 版本：v0.1  
-> 状态：设计评审稿  
+> 版本：v0.2  
+> 状态：Local MVP 已实现（腾讯新闻、雪球、Twitter/X 适配器与管理端 UI 待做）  
 > 日期：2026-10-17  
 > 技术栈：Python + FastAPI + LangChain / LangGraph + PostgreSQL + Redis + Vue 3 + Vant
 
@@ -52,10 +52,10 @@
 | US-1 | 作为用户，我能注册/登录，并拥有独立的关注列表和自选股 | 账户 |
 | US-2 | 作为用户，我能搜索博主并关注，设置 0.1–5.0 的权重 | 博主 |
 | US-3 | 作为用户，我能添加系统里还没有的博主 | 博主 |
-| US-4 | 作为用户，我能在信息流里看到关注博主的报告摘要、分类标签、AI 评分 | 信息流 |
+| US-4 | 作为用户，我能在信息流里看到关注博主的报告摘要、分类标签与方向 | 信息流 |
 | US-5 | 作为用户，我能按行业/个股/宏观、看多/看空、博主筛选信息流 | 信息流 |
 | US-6 | 作为用户，我能把股票加入自选，查看综合评分、结论和依据 | 自选股 |
-| US-7 | 作为用户，我能调整个股/行业/宏观三类报告的聚合权重 | 自选股 |
+| US-7 | 作为用户，我能调整个股/行业/宏观三个板块的聚合配额 | 自选股 |
 | US-8 | 作为管理员，我能启停渠道、配置抓取频率、查看抓取与 AI 任务运行情况 | 管理 |
 | US-9 | 作为管理员，我能审核/合并用户新增的博主，处理重复与别名 | 管理 |
 | US-10 | 作为用户，我能在“发现”页查看全站热门/最新内容，并直接关注感兴趣的作者 | 发现流 |
@@ -64,7 +64,8 @@
 
 **MVP 必须包含：**
 
-- 3 个渠道适配器（优先选接入成本最低的，如腾讯新闻 + 雪球 + 一个 RSS/研报源）；
+- 首批渠道适配器：**华尔街见闻、新浪财经、腾讯新闻**（列表接口自带发布者字段，接入成本低）；
+- **雪球**作为重点渠道在 MVP 后半段接入（需要登录态/cookie 维护，反爬成本最高）；
 - 每日定时增量采集；
 - 单篇报告的分类、评分、摘要、关键词、标的识别；
 - 关注博主 + 个人权重 + **关注信息流**；
@@ -125,7 +126,7 @@
 |---|---|---|---|
 | `authors.default_weight` | 全局 | 博主的基础可信度/影响力，管理员维护 | 1.0 |
 | `follows.weight` | 用户 | 当前用户对该博主的个人信任权重，覆盖全局值 | 1.0 |
-| `user_scoring_config.category_weights` | 用户 | 个股/行业/宏观三类报告在个股聚合中的占比 | 1.0 / 0.5 / 0.25 |
+| `user_scoring_config.category_weights` | 用户 | 个股/行业/宏观三个板块在综合得分中的配额占比 | 0.4 / 0.4 / 0.2 |
 
 信息流排序和个股聚合都使用**用户视角的有效博主权重**：
 
@@ -142,8 +143,8 @@ effective_author_weight(user, author) =
 | 渠道是否可在线创建 | **否**，渠道由代码注册，管理端只启停/改配置 | 每个渠道都需要适配器代码，在线创建没有意义且容易产生脏数据 |
 | 报告分类 | **主分类 + 多标签** | 一篇研报常同时涉及个股和行业，单标签会丢失聚合信号 |
 | 报告评分是否分用户 | **否，全局一次** | 避免 N 用户 × M 报告重复调用 LLM，成本可控 |
-| 个股聚合是否分用户 | **是，按用户计算** | 博主权重、三类权重都是用户私有的 |
-| 聚合分数由谁决定 | **公式决定数值，LLM 只做解释和有限修正** | 可解释、可复现、可回测，避免 LLM 幻觉出分数 |
+| 个股聚合是否分用户 | **是，按用户计算** | 博主权重、板块配额都是用户私有的 |
+| 聚合分数由谁决定 | **公式决定数值，LLM 只做解释** | 可解释、可复现、可回测，避免 LLM 幻觉出分数或图表加总不一致 |
 | 转载/重复内容 | **聚类去重，聚合时只算一次** | 防止同一观点被多个渠道转载后放大 |
 | 博主解析 | **规则优先，LLM 兜底** | 大多数场景可用 external_id / 别名精确匹配，LLM 只处理模糊字符串 |
 | 分析流水线 | **LangGraph 确定性工作流**，不是自由 ReAct Agent | 每日批处理要求稳定、可重试、成本可预测 |
@@ -279,11 +280,13 @@ GET /feed?scope=following|discover
        直接关联该股票的 report_securities
        该股票所属行业的 report_industries
        宏观 report_macro_topics（按市场范围过滤）
-  → 按用户权重、分类权重、时效衰减、置信度加权
-  → 得到确定性分数 S 与有效样本量 n_eff
-  → LLM 基于 Top-K 报告生成结论、驱动因素、风险
-  → 保存快照 stock_analysis_snapshots
-  → 返回分数、结论、分项贡献、引用报告
+  → 硬性过滤 90 天以前的报告
+  → 按置信度、作者权重、相关度、时间衰减计算文章权重
+  → 板块内求加权信号，再按 40 / 40 / 20 配额折算为板块得分
+  → 需要时按比例重分配缺失板块配额，汇总为 0 ~ 100 的综合得分
+  → LLM 只基于 Top-K 报告撰写结论、驱动因素、风险，不修改分数
+  → 保存快照 stock_score_snapshots
+  → 返回综合得分、板块构成、结论与引用报告
 ```
 
 ---
@@ -432,6 +435,7 @@ CREATE TABLE reports (
     lang                VARCHAR(8) DEFAULT 'zh',
     author_id           BIGINT REFERENCES authors(id),
     author_raw          VARCHAR(255),             -- 原始署名，解析失败也保留
+    author_external_id  VARCHAR(255),             -- 渠道原始作者 ID，便于重新解析
     published_at        TIMESTAMPTZ NOT NULL,
     fetched_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     market              VARCHAR(16),              -- CN | HK | US | GLOBAL
@@ -572,16 +576,17 @@ CREATE TABLE stock_analysis_snapshots (
     user_id         BIGINT NOT NULL REFERENCES users(id),
     security_id     BIGINT NOT NULL REFERENCES securities(id),
     as_of_date      DATE NOT NULL,
-    raw_score       NUMERIC(6,4) NOT NULL,        -- 公式结果 [-1, 1]
-    final_score     NUMERIC(6,4) NOT NULL,        -- 经 LLM 有限修正后 [-1, 1]
-    confidence      NUMERIC(4,3) NOT NULL,
-    n_effective     NUMERIC(6,2) NOT NULL,        -- 有效样本量
+    total_points    NUMERIC(6,2) NOT NULL,        -- 综合得分 [0, 100]，主展示值
+    raw_score       NUMERIC(6,4) NOT NULL,        -- 全量文章加权信号 [-1, 1]，仅诊断用
+    final_score     NUMERIC(6,4) NOT NULL,        -- 兼容字段：total_points / 50 - 1
+    confidence      NUMERIC(4,3) NOT NULL,        -- 展示用聚合置信度
+    n_effective     NUMERIC(6,2) NOT NULL,        -- 有效样本量，仅作信息展示
     conclusion      TEXT NOT NULL,
     drivers         JSONB NOT NULL DEFAULT '[]',
     risks           JSONB NOT NULL DEFAULT '[]',
-    category_scores JSONB NOT NULL DEFAULT '{}',  -- 个股/行业/宏观分项
+    category_scores JSONB NOT NULL DEFAULT '[]',  -- 板块得分、配额、加权信号、文章数
     inputs          JSONB NOT NULL DEFAULT '[]',  -- [{report_id, weight, score, ...}]
-    config_snapshot JSONB NOT NULL,               -- 当时的权重配置
+    config_snapshot JSONB NOT NULL,               -- 当时的配额、半衰期与 90 天窗口配置
     model           VARCHAR(64),
     prompt_version  VARCHAR(32),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -697,15 +702,25 @@ class ChannelAdapter(Protocol):
 - **不负责**分类、评分、博主合并、去重入库；
 - 网络错误、验证码、登录失效等抛出统一异常，由任务层重试/告警。
 
-渠道实现建议：
+渠道实现建议（含 2026-10-17 单次实测结论）：
 
-| 渠道 | 接入方式 | 注意点 |
-|---|---|---|
-| 腾讯新闻 | 搜索 API / RSS / 页面解析 | 发布者字段可能是媒体名；需区分“发布者”和“文中引用的机构” |
-| 雪球 | 站内 API + 登录态 cookie | 关注流/用户主页；cookie 放密钥管理，定期失效需告警 |
-| Twitter/X | 官方 API v2 | 配额与费用；只按关键词/指定账号拉取 |
-| 研报源 | RSS / 开放接口 / PDF 下载 | PDF 需文本抽取，扫描件需 OCR |
-| 通用 RSS | feedparser | 作为低成本扩展渠道 |
+| 渠道 | 推荐接入 | 发布者字段 | 难度 | 注意点 |
+|---|---|---|---|---|
+| 新浪财经 | 列表 API / RSSHub | `media_name`、`author` | 低 | 列表项自带媒体名、关键词、摘要，适合快速接入 |
+| 华尔街见闻 | 热榜 API + 7x24 快讯 API | 需详情接口 | 低–中 | 热榜字段较薄，作者/正文需拉详情；快讯适合宏观事件 |
+| 腾讯新闻 | 财经频道/搜索 API，列表 API 兜底 | `source` | 中 | 列表自带发布者；通用热榜需金融相关性预过滤 |
+| 雪球 | 登录态 API / 自建 RSSHub | 用户身份 | 高 | 未登录接口实测返回 400；cookie 需加密存储并监控失效 |
+| Twitter/X | 官方 API v2 | 账号 | 中–高 | 配额与费用；只按关键词/指定账号拉取 |
+| 研报源 | RSS / 开放接口 / PDF 下载 | 机构署名 | 高 | PDF 需文本抽取，扫描件需 OCR；注意版权 |
+| 通用 RSS | feedparser | 频道/作者 | 低 | 作为低成本扩展渠道 |
+
+**适配器内部 fallback 链：**
+
+```text
+官方 API / RSS  →  自建 RSSHub  →  列表页解析  →  详情页/浏览器渲染
+```
+
+每级失败都要记录渠道健康指标；连续失败触发熔断与告警，不影响其他渠道。**不建议把浏览器渲染（Playwright）作为雪球的主路径**，只作为最后兜底，并配合登录态管理、频率限制和人工告警。
 
 ### 5.2 调度与任务编排
 
@@ -753,7 +768,19 @@ class ChannelAdapter(Protocol):
 
 #### B. 媒体/研报署名
 
-腾讯新闻等渠道常见 `author_raw = "高盛"`、`"摩根大通"`、`"中信证券研究部"`。处理流程：
+腾讯新闻等渠道常见 `author_raw = "高盛"`、`"摩根大通"`、`"中信证券研究部"`。
+
+各渠道的发布者字段来源不同，适配器需要在标准化阶段统一映射到 `author_raw`：
+
+| 渠道 | 发布者字段 | 说明 |
+|---|---|---|
+| 腾讯新闻 | `source` | 列表项直接带发布者，如“人民日报”“央视新闻” |
+| 新浪财经 | `media_name`（优先）/ `author` | `media_name` 通常是媒体名；`author` 可能为空 |
+| 华尔街见闻 | 详情接口/详情页 | 热榜列表没有作者，需要补拉详情 |
+| 雪球 | 用户身份 | 通过登录态与用户接口获取，不走文字解析 |
+| 研报源 | 机构署名/PDF 封面 | 可能是“中信证券研究部”等长名称，需要别名归一 |
+
+处理流程：
 
 ```text
 author_raw
@@ -780,6 +807,64 @@ author_raw
 | LLM 超时/限流 | 任务重试；超过阈值进入死信队列 |
 | LLM 输出不合法 | 结构化输出校验失败 → 修复提示重试 1 次 → 降级分析并标记 |
 | 单篇报告持续失败 | `job_runs.status=failed`，管理端可见，可手动重跑 |
+
+**渠道契约测试：** 每个适配器保存脱敏后的响应样本（JSON / HTML / RSS），CI 中跑解析回归；生产环境每日做一次低频 smoke test，端点结构变化时第一时间告警。参考项目的测试全部基于 mock，没有覆盖真实响应漂移，这是我们要补上的。
+
+### 5.6 参考项目调研：cn-news-digest
+
+> 调研对象：<https://github.com/FrankLPR/cn-news-digest>  
+> 调研日期：2026-10-17  
+> 结论：**仅参考其来源清单、适配器组织方式与降级思路；不复制代码、不作为依赖、不直接照搬其抓取路径。**
+
+#### 5.6.1 仓库概况
+
+- 定位：CLI / Python 库，抓取中文财经热榜并生成摘要；不是面向多用户、作者关注、研报分析的平台。
+- 规模：约 2.5k 行（含测试），4 个来源适配器；代码结构清晰，使用异步 `httpx`、`feedparser`、可选 Playwright。
+- 维护状态：仓库创建于 2026-04，调研时约 1 star、0 fork、无 CI 配置；代码量小、活跃度低，不适合作为生产依赖。
+- 许可证：README 与 `pyproject.toml` 声明 MIT，但仓库中没有 `LICENSE` 文件，GitHub 未识别到许可证；从合规角度不应直接拷贝代码。
+- 代码风格：有 `BaseSource` 抽象、单源失败返回空列表、RSSHub → 直连 API → Playwright 的降级链，这些**思路**值得借鉴。
+
+#### 5.6.2 实测结果（2026-10-17，单次请求）
+
+| 来源 | 端点 | 实测 | 说明 |
+|---|---|---|---|
+| 腾讯新闻 | `i.news.qq.com/gw/event/pc_hot_ranking_list` | HTTP 200 | 返回通用热榜；列表项自带 `source`（发布者）字段 |
+| 新浪财经 | `feed.mix.sina.com.cn/api/roll/get` | HTTP 200 | 列表项自带 `media_name`（媒体名）、`keywords`、`intro` |
+| 华尔街见闻 | `api-one-wscn.awtmt.com/apiv1/content/articles/hot` | HTTP 200 | 热榜字段较薄，作者/正文需详情接口 |
+| 雪球 | `xueqiu.com/statuses/hots.json` | HTTP 400 | 未登录被拒；必须维护 cookie/浏览器会话 |
+| 公共 RSSHub | `rsshub.app/...` | 超时 | 公共实例不稳定，建议自建 |
+
+> 实测只用于评估接入方式。正式实现需重新编写适配器，遵守各渠道服务条款、robots 与频率限制。
+
+#### 5.6.3 可以借鉴的思路
+
+1. `BaseSource` 抽象与统一的 `fetch` 接口；
+2. 单源失败不影响整体（graceful degradation）；
+3. 同一渠道的 fallback 链：RSS/RSSHub → 列表 API → 详情页/浏览器；
+4. 从列表项提取互动指标（阅读、评论、点赞），用于发现流热度；
+5. 在进入 LLM 前做轻量关键词/来源预过滤，降低无效调用与成本；
+6. 参考项目没有利用腾讯列表的 `source` 字段；我们应把它作为发布者的主来源，减少 LLM 消歧。
+
+#### 5.6.4 不直接采用的部分
+
+1. **不复制代码、不作为依赖**；
+2. 不使用无重试、无限流、无熔断的裸 `httpx` 调用；
+3. 不把 Playwright 拦截 XHR 作为雪球主路径（只做最后兜底）；
+4. 不使用“单次运行内标题模糊匹配”作为去重方案（我们采用 `content_hash` + SimHash/embedding 聚类）；
+5. 不依赖公共 RSSHub 实例，建议自建并监控路由健康；
+6. 不把“通用热榜 + 关键词过滤”作为腾讯财经的主路径，改为财经频道/搜索 + 发布者字段抽取；
+7. 不采用其薄 `Article` 模型（缺 `external_id`、作者、正文、附件），我们使用更完整的 `RawItem` 与分析模型。
+
+#### 5.6.5 来源优先级建议
+
+| 优先级 | 渠道 | 理由 |
+|---|---|---|
+| P0 | 新浪财经 | 列表 API 稳定，自带媒体名/关键词/摘要，接入最快 |
+| P0 | 华尔街见闻 | 热榜 + 7x24 快讯，宏观/市场覆盖好；需详情补作者 |
+| P1 | 腾讯新闻 | 列表自带 `source` 发布者，适合博主解析；需金融相关性预过滤 |
+| P1 | 雪球 | 作者关注的核心来源，但登录态/反爬维护成本最高 |
+| P2 | Twitter/X | 官方 API，配额与费用；按账号/关键词抓取 |
+| P2 | 研报源 / PDF | 价值高，但解析与版权复杂度高 |
 
 ---
 
@@ -1030,22 +1115,18 @@ LLM_MODEL_AGGREGATE=deepseek-v4-flash
 
 ### 7.1 报告级评分
 
-报告级评分是全局的，与用户无关。
+报告级评分是全局的，与用户无关。它是**内部聚合信号**，用于个股综合评分与信息流排序；前端报告卡片和报告详情**不展示单篇分数**，避免用户把单篇观点误读为投资结论。
 
 | 字段 | 范围 | 用途 |
 |---|---|---|
-| `score` | -1.0 ~ +1.0 | 方向性影响 |
-| `confidence` | 0 ~ 1 | 置信度，参与加权 |
-| `direction` | bullish / bearish / neutral | UI 颜色与筛选 |
-| `horizon` | short / medium / long | 时效衰减参考 |
+| `score` | -1.0 ~ +1.0 | 方向性影响，作为个股聚合的输入 |
+| `confidence` | 0 ~ 1 | 置信度，参与文章权重 |
+| `direction` | bullish / bearish / neutral | UI 方向标签与筛选 |
+| `horizon` | short / medium / long | 内容语义，不直接决定时间衰减 |
 
-展示分数：
+单篇分数的语义标尺（仅内部与调试使用）：
 
-```text
-display_score = round(50 + 50 × score)     # 0 ~ 100
-```
-
-| 展示分 | 标签 |
+| 内部映射 | 方向 |
 |---|---|
 | 80–100 | 强看多 |
 | 60–79 | 看多 |
@@ -1053,7 +1134,7 @@ display_score = round(50 + 50 × score)     # 0 ~ 100
 | 21–40 | 看空 |
 | 0–20 | 强看空 |
 
-> UI 颜色遵循 A 股习惯：**红涨绿跌**（看多为红、看空为绿），并做成可配置主题，避免海外用户误解。
+> 用户看到的唯一数字是**个股综合得分（0 ~ 100）**，其计算方式见 7.3。UI 颜色遵循 A 股习惯：**红涨绿跌**（看多为红、看空为绿），并做成可配置主题，避免海外用户误解。
 
 ### 7.2 信息流排序
 
@@ -1116,24 +1197,26 @@ heat      = default_weight^0.5
 
 #### 7.3.1 输入范围
 
-对某只股票 `S`，在时间窗口内取三类报告：
+对某只股票 `S`，在用户选择的时间窗口内取三类报告，并统一执行 **90 天硬截止**：
 
-| 类别 | 来源 | 默认窗口 | 默认分类权重 `w_cat` | 默认半衰期 |
+| 板块 | 来源 | 默认配额 | 默认半衰期 | 时间范围 |
 |---|---|---|---|---|
-| 个股 | `report_securities` 直接关联 `S` | 30 天 | 1.00 | 7 天 |
-| 行业 | `S` 所属行业的 `report_industries` | 60 天 | 0.50 | 14 天 |
-| 宏观 | `report_macro_topics`（按市场范围过滤） | 90 天 | 0.25 | 30 天 |
+| 个股 | `report_securities` 直接关联 `S` | 40 分 | 7 天 | 近 90 天 |
+| 行业 | `S` 所属行业的 `report_industries` | 40 分 | 14 天 | 近 90 天 |
+| 宏观 | `report_macro_topics`（按市场范围过滤） | 20 分 | 30 天 | 近 90 天 |
 
-用户可在 `users.scoring_config` 覆盖：
+- 前端时间窗口提供 `7d / 30d / 90d`，默认 `30d`；
+- 无论选择哪个窗口，`published_at` 早于 `as_of - 90 天` 的报告一律不参与计算；
+- “近 3 月”即最大可选窗口，不再提供“全部历史”。
+
+用户可在 `users.scoring_config` 覆盖板块配额与半衰期：
 
 ```json
 {
-  "category_weights": { "stock": 1.0, "industry": 0.5, "macro": 0.25 },
+  "category_weights": { "stock": 0.4, "industry": 0.4, "macro": 0.2 },
   "half_life_days":   { "stock": 7, "industry": 14, "macro": 30 },
   "scope": "all",
-  "include_unfollowed": true,
-  "shrinkage_k": 3,
-  "llm_adjust_limit": 0.10
+  "include_unfollowed": true
 }
 ```
 
@@ -1144,76 +1227,77 @@ heat      = default_weight^0.5
 
 #### 7.3.2 聚合公式
 
-对每篇报告 `i`：
+**第一步：文章有效权重。** 对每篇报告 `i`：
 
 ```text
-e_i = confidence_i
-    × (w_author_i)^0.5          # 抑制极端权重
-    × w_cat(category_i)         # 个股/行业/宏观
-    × recency_i                 # 0.5^(age_days / half_life)
-    × relevance_i               # 报告与股票的相关度
+age_i     = max(0, as_of - published_at_i)        # 天
+recency_i = 0.5 ^ (age_i / half_life_category)   # 时间衰减
+w_i       = confidence_i
+          × sqrt(author_weight_i)                # 抑制极端作者权重
+          × relevance_i                          # 报告与股票的相关度
+          × recency_i
 ```
+
+半衰期越短，旧文章衰减越快：个股 7 天、行业 14 天、宏观 30 天。这样同一篇研报在“个股观点”里很快过期，在“宏观背景”里则保留更久。
+
+**第二步：板块加权信号。** 对每个有报告的板块 `c`：
 
 ```text
-raw_score = Σ(e_i × score_i) / Σ(e_i)          # 加权平均，[-1, 1]
+signal_c = Σ(w_i × score_i) / Σ(w_i)             # [-1, 1]
 ```
 
-有效样本量（Kish effective sample size）：
+**第三步：缺失板块的配额重分配。** 只对实际有报告的板块分配配额：
 
 ```text
-n_eff = (Σ e_i)^2 / Σ(e_i^2)
+present  = {c | 板块 c 至少有一篇报告}
+share_c  = base_c / Σ(base_j for j in present)   # base 默认 0.4 / 0.4 / 0.2
+budget_c = 100 × share_c
 ```
 
-收缩（避免一篇报告就给出极端结论）：
+例如只有个股和宏观报告时，`share = 0.4/0.6 = 66.7%`、`0.2/0.6 = 33.3%`，个股板块自动获得 66.7 分配额。这样不会因为某个板块没有文章而凭空丢分，也不需要把缺失板块当作中性 0。
+
+**第四步：板块得分与综合得分。**
 
 ```text
-final_raw = raw_score × n_eff / (n_eff + k)     # k 默认 3
+points_c     = (signal_c + 1) / 2 × budget_c     # signal -1→0 分，+1→满配额
+total_points = Σ points_c                        # 0 ~ 100，天然不超过 100
 ```
 
-解释：
+- 板块内所有文章先按权重求一个 `signal_c`，再压缩到该板块的配额，符合“5 篇文章加权后压缩到 40 分”的规则；
+- 同一批文章不会因为篇数增加而无限抬高总分：增加文章只会让 `signal_c` 更稳定；
+- 缺失板块的配额按比例并入其余板块，UI 会标注“无相关研报 · 配额已并入其他板块”；
+- 保留 `final_score = total_points / 50 - 1` 作为兼容字段（50 分 ↔ 0，100 ↔ +1，0 ↔ -1），不再作为主展示值；
+- `n_eff` 与 `confidence` 仅用于展示“样本是否充分”，**不再对分数做收缩**。
 
-- 只有 1 篇报告时，`n_eff=1`，分数被压缩到原来的 1/4；
-- 报告越多、权重越分散，`n_eff` 越大，越接近原始加权平均；
-- `n_eff < 1.5` 时，前端展示“样本不足，仅供参考”。
-
-分项分数：对三类报告分别套用上述公式，得到 `category_scores = {stock, industry, macro}`，并在 UI 中展示各分项的贡献。
+示例：个股板块 `signal=0.60`、配额 40 → `(0.60+1)/2×40 = 32` 分；行业 `signal=-0.20`、配额 40 → `16` 分；宏观 `signal=0.10`、配额 20 → `11` 分；综合得分 `59/100`。
 
 #### 7.3.3 LLM 的职责
 
-LLM **不自由生成分数**，只做三件事：
+LLM **不生成、不修改任何数字**，只基于已算好的分数和 Top-K 报告（按 `w_i` 排序，最多 20 篇）撰写：
 
-1. 基于 Top-K 报告（按 `e_i` 排序，最多 20 篇）生成**结论、驱动因素、风险点**；
-2. 给出一个 `qualitative_score`（-1 ~ 1），与公式分数对比；
-3. 若与公式分数差异显著，可提出**有限修正**：
-
-```text
-adjustment = clamp(qualitative_score - final_raw, -limit, +limit)  # limit 默认 0.10
-final_score = clamp(final_raw + adjustment, -1, 1)
-```
-
-- 必须给出修正理由，且仅允许在 `limit` 内；
-- 若未给出理由，忽略修正；
-- 同时保存 `raw_score`、`final_score`、`adjustment_reason`，保证可审计；
-- `limit` 可由管理员配置，设为 0 即完全确定性。
+1. **结论**：综合得分背后的主要逻辑；
+2. **驱动因素**：最多 5 条；
+3. **风险点**：最多 3 条；
+4. **引用报告 ID**：必须来自输入列表。
 
 LLM 输出 Schema：
 
 ```python
 class StockConclusionOut(BaseModel):
     conclusion: str = Field(max_length=300)
-    qualitative_score: float = Field(ge=-1, le=1)
     drivers: list[str] = Field(default_factory=list, max_length=5)
     risks: list[str] = Field(default_factory=list, max_length=3)
-    adjustment_reason: str | None = None
     cited_report_ids: list[int] = Field(default_factory=list)
 ```
+
+**一致性约束：** 综合得分、板块得分、各级配额全部由确定性代码计算并写入快照；LLM 在 Prompt 中会收到 `综合得分 X/100` 与各板块得分，只负责解释，保证图表分段之和始终等于总分。若 LLM 输出与数字矛盾，前端仍以确定性分数为准。
 
 **引用约束：** `cited_report_ids` 必须来自输入列表；前端展示时链接到对应报告，防止“无来源结论”。
 
 #### 7.3.4 计算与缓存
 
 - 个股评分是**用户级**的，缓存 key：`stock_score:{user_id}:{security_code}:{as_of_date}:{config_version}`；
-- 用户修改关注/权重/三类权重后，递增 `config_version`，相关缓存失效；
+- 用户修改关注/权重/板块配额后，递增 `config_version`，相关缓存失效；
 - 每日夜间为所有自选股生成快照，保证历史曲线；
 - 用户手动刷新走异步任务，前端轮询/SSE 获取结果，避免长请求阻塞。
 
@@ -1221,27 +1305,30 @@ class StockConclusionOut(BaseModel):
 
 每个个股评分快照必须保存：
 
-- 公式参数与配置快照；
-- 参与计算的报告 ID、各自权重、分数、置信度；
-- 分项得分（个股/行业/宏观）；
+- 公式参数与配置快照（板块配额、半衰期、90 天截止）；
+- 参与计算的报告 ID、文章权重、原始分数、置信度、时效系数；
+- 各板块的加权信号、实际配额、板块得分；
+- 综合得分 `total_points`；
 - LLM 结论与引用；
 - 模型与 Prompt 版本。
 
-这样才能回答用户的问题：“为什么是 72 分？”
+这样才能回答用户的问题：“为什么是 78 分？”
 
 UI 展示示例：
 
 ```text
-贵州茅台 600519.SH        综合 72 分 · 看多
-├─ 个股信号  78 分（权重 1.00，12 篇）
-├─ 行业信号  65 分（权重 0.50，8 篇）
-└─ 宏观信号  58 分（权重 0.25，15 篇）
+贵州茅台 600519.SH              综合得分 78 / 100
+├─ 个股板块  62.0 / 66.7 分（9 篇，加权信号 +0.86）
+├─ 宏观板块  15.9 / 33.3 分（3 篇，加权信号 -0.05）
+└─ 行业板块  无相关研报 · 配额已并入其他板块
 
 结论：高端白酒动销边际改善，机构上调盈利预测；但宏观消费数据偏弱，
       短期估值修复空间有限。
 主要驱动：...
 风险：...
 ```
+
+图表使用**水平堆叠条**表达“100 分总盘子的部分-整体关系”：个股、行业、宏观用固定分类色，剩余部分用浅灰表示未得分；图例同时给出“板块得分 / 实际配额 / 文章数”，并标注缺失板块的配额重分配。堆叠条比分段环形图更适合窄屏，也能直接读出各段长度。
 
 ### 7.5 评分校准（持续优化）
 
@@ -1280,16 +1367,16 @@ UI 展示示例：
 | 配置 | 存储 | 默认值 |
 |---|---|---|
 | 关注博主权重 | `follows.weight` | 1.0 |
-| 三类报告权重 | `users.scoring_config.category_weights` | 1.0 / 0.5 / 0.25 |
+| 板块配额 | `users.scoring_config.category_weights` | 0.4 / 0.4 / 0.2（个股/行业/宏观） |
 | 半衰期 | `users.scoring_config.half_life_days` | 7 / 14 / 30 天 |
+| 报告最大年龄 | 全局常量 `MAX_REPORT_AGE_DAYS` | 90 天 |
 | 聚合范围 | `users.scoring_config.scope` | all |
 | 是否纳入未关注博主 | `users.scoring_config.include_unfollowed` | true |
-| LLM 修正上限 | `users.scoring_config.llm_adjust_limit` | 0.10 |
 
 ### 8.4 权重变更的影响
 
 - 修改博主权重：影响信息流智能排序、个股聚合；
-- 修改三类权重：只影响个股聚合；
+- 修改板块配额：只影响个股聚合；
 - 变更后**不回写历史快照**，而是生成新快照；
 - 前端采用乐观更新 + 防抖保存，失败回滚；
 - 每次变更记录 `updated_at`，必要时写入审计日志。
@@ -1398,8 +1485,6 @@ UI 展示示例：
         "categories": ["industry", "stock"],
         "keywords": ["白酒", "动销", "批价", "中秋备货"],
         "direction": "bullish",
-        "score": 0.62,
-        "display_score": 81,
         "confidence": 0.78,
         "horizon": "medium",
         "author": {
@@ -1408,6 +1493,7 @@ UI 展示示例：
           "default_weight": 1.2
         },
         "user_weight": 1.5,
+        "channel": "wallstreetcn",
         "published_at": "2026-10-17T08:30:00+08:00",
         "url": "https://..."
       }
@@ -1423,25 +1509,53 @@ UI 展示示例：
 {
   "data": {
     "security": { "code": "600519.SH", "name": "贵州茅台" },
-    "as_of_date": "2026-10-17",
-    "raw_score": 0.44,
-    "final_score": 0.47,
-    "display_score": 74,
-    "direction": "bullish",
-    "confidence": 0.71,
-    "n_effective": 8.6,
-    "conclusion": "高端白酒动销边际改善，机构上调盈利预测；但宏观消费数据偏弱，短期估值修复空间有限。",
-    "category_scores": {
-      "stock": { "score": 0.56, "n_effective": 4.2, "weight": 1.0 },
-      "industry": { "score": 0.30, "n_effective": 3.1, "weight": 0.5 },
-      "macro": { "score": 0.12, "n_effective": 1.3, "weight": 0.25 }
-    },
-    "drivers": ["中秋备货好于预期", "批价企稳", "机构上调盈利预测"],
-    "risks": ["宏观消费数据偏弱", "估值处于历史中位"],
-    "cited_report_ids": [1024, 1031, 1048],
-    "config_snapshot": {
-      "category_weights": { "stock": 1.0, "industry": 0.5, "macro": 0.25 },
-      "scope": "all"
+    "score": {
+      "report_count": 9,
+      "raw_score": 0.1285,
+      "final_score": 0.5516,
+      "total_points": 77.58,
+      "display_score": 77.58,
+      "confidence": 0.4542,
+      "n_eff": 8.1873,
+      "max_age_days": 90,
+      "category_weights": { "stock": 0.4, "industry": 0.4, "macro": 0.2 },
+      "half_life_days": { "stock": 7, "industry": 14, "macro": 30 },
+      "category_scores": [
+        {
+          "category": "stock",
+          "budget_share": 0.6667,
+          "budget_points": 66.67,
+          "article_count": 1,
+          "weighted_signal": 0.85,
+          "points": 61.67,
+          "weight_sum": 0.529,
+          "confidence": 0.54
+        },
+        {
+          "category": "macro",
+          "budget_share": 0.3333,
+          "budget_points": 33.33,
+          "article_count": 8,
+          "weighted_signal": -0.045,
+          "points": 15.92,
+          "weight_sum": 2.1991,
+          "confidence": 0.64
+        }
+      ],
+      "conclusion": "贵州茅台近3个月纳入9条相关报告（个股1条、宏观8条），综合信号偏多，综合得分78/100。板块构成：个股62/67、宏观16/33；…",
+      "breakdown": [
+        {
+          "report_id": 1,
+          "category": "stock",
+          "score": 0.85,
+          "confidence": 0.54,
+          "author_weight": 1.0,
+          "category_weight": 0.6667,
+          "recency_factor": 0.9796,
+          "relevance": 1.0,
+          "effective_weight": 0.529
+        }
+      ]
     }
   }
 }
@@ -1460,7 +1574,7 @@ UI 展示示例：
 | 路由 | Vue Router 4 | |
 | 状态 | Pinia | auth / feed / authors / watchlist |
 | UI | Vant 4 | 移动端优先；适合信息流卡片、列表、表单 |
-| 图表 | ECharts | 评分仪表盘、历史曲线 |
+| 图表 | 原生 SVG / CSS | 综合得分环形、评分构成堆叠条、权重条；移动端零图表依赖 |
 | 请求 | Axios + 拦截器 | token 刷新、错误提示、取消请求 |
 | 日期 | dayjs | 相对时间 |
 | 测试 | Vitest + Playwright | 关键流程 |
@@ -1478,7 +1592,7 @@ UI 展示示例：
 | `/reports/:id` | 报告详情 | 全文/摘要、AI 分析、原文链接、同文转载 |
 | `/watchlist` | 自选股 | 列表 + 最新评分 + 涨跌色 |
 | `/stocks/:code` | 个股详情 | 综合评分、分项贡献、结论、报告列表、历史曲线 |
-| `/settings` | 设置 | 三类权重、聚合范围、账户 |
+| `/settings` | 设置 | 板块配额、聚合范围、账户 |
 | `/admin/*` | 管理端 | 渠道、任务、博主审核（PC 布局） |
 
 底部导航（`van-tabbar`）：**信息流 / 自选股 / 博主 / 我的**。
@@ -1488,20 +1602,20 @@ UI 展示示例：
 ```text
 components/
 ├── feed/
-│   ├── FeedCard.vue            # 摘要 + 标签 + 评分 + 博主
+│   ├── FeedCard.vue            # 摘要 + 标签 + 方向 + 博主（不展示单篇分数）
 │   ├── FeedFilterBar.vue       # 分类/方向/博主筛选
 │   ├── FeedTabs.vue            # 关注 / 发现（热门、最新）
 │   ├── DiscoverHotList.vue     # 热门榜（含多样性重排结果）
 │   ├── FollowButton.vue        # 发现流卡片内一键关注 + 权重弹层
-│   ├── ScoreBadge.vue          # 分数 + 方向颜色
 │   └── HotScoreBadge.vue       # 热门分/转载数（可选展示）
 ├── author/
 │   ├── AuthorItem.vue
 │   ├── AuthorSearch.vue
 │   └── WeightEditor.vue        # Vant Stepper / Slider
 ├── stock/
-│   ├── StockScoreGauge.vue     # ECharts 仪表盘
-│   ├── CategoryBreakdown.vue   # 个股/行业/宏观分项
+│   ├── ScoreRing.vue           # 综合得分环形总分
+│   ├── ScoreComposition.vue    # 0~100 水平堆叠条 + 板块图例/配额
+│   ├── CategoryBreakdown.vue   # 个股/行业/宏观分项与文章权重
 │   ├── ConclusionCard.vue      # AI 结论 + 驱动 + 风险
 │   └── ScoreHistoryChart.vue
 ├── report/
@@ -1521,9 +1635,11 @@ components/
 │ 高端白酒动销边际改善，上调目标价          │
 │ 渠道调研显示中秋备货好于预期……           │
 │ [行业] [白酒] [动销] [批价]              │
-│                        81 分 · 看多 🔴   │
+│                              看多 🔴     │
 └─────────────────────────────────────────┘
 ```
+
+单篇报告不展示分数；方向标签保留，便于快速筛选。
 
 ### 10.4 交互细节
 
@@ -1548,7 +1664,7 @@ stores/
 ├── feed.ts        # 关注/发现列表、游标、筛选、热门窗口、缓存
 ├── authors.ts     # 搜索结果、关注列表、权重
 ├── watchlist.ts   # 自选股、评分摘要
-└── settings.ts    # 三类权重、主题
+└── settings.ts    # 板块配额、主题
 ```
 
 - 信息流按“筛选组合”缓存最近一页，切换 tab 不重复请求；
@@ -1820,7 +1936,7 @@ research-scout-agent/
 - 初始化 FastAPI + Vue 工程；
 - PostgreSQL/Redis/Celery 接入；
 - 用户注册/登录/JWT；
-- 渠道表 + 适配器接口 + 1 个最易接入的渠道；
+- 渠道表 + 适配器接口 + **新浪财经、华尔街见闻**两个 P0 渠道；
 - 报告/作者/分析基础表与迁移。
 
 **验收：** 能定时抓到文章并落库；能登录并看到空信息流。
@@ -1828,7 +1944,8 @@ research-scout-agent/
 ### Phase 1：分析与信息流（2–3 周）
 
 - LangGraph 分析流水线（分类/评分/摘要/关键词/实体）；
-- 博主解析（规则优先）；
+- 博主解析（规则优先，接入腾讯 `source`、新浪 `media_name` 字段）；
+- 接入 **腾讯新闻、雪球** 两个 P1 渠道（雪球需登录态管理）；
 - 关注 + 权重 + 关注信息流；
 - **发现/热门基础版**：全局热门分 + 最新流 + 多样性重排 + 卡片内一键关注；
 - 博主搜索/新增/权重编辑 UI；
@@ -1842,7 +1959,7 @@ research-scout-agent/
 - 自选股增删查；
 - 个股聚合公式 + LLM 结论；
 - 分项贡献、评分历史、引用报告；
-- 三类权重设置 UI；
+- 板块配额设置 UI；
 - 每日快照任务。
 
 **验收：** 自选股页面能在 2 秒内返回综合评分与结论；能解释分数来源。
@@ -1882,6 +1999,8 @@ research-scout-agent/
 | 8 | 研报 PDF 的版权与存储 | 待评估 | 只存必要片段 + 原文链接；原始文件设置短生命周期 |
 | 9 | 评分被用户误解为投资建议 | 高 | 全站免责声明；结论中避免“买入/卖出”指令性措辞 |
 | 10 | 同一博主跨渠道身份合并 | 待定 | 先按渠道独立，管理员手动合并；自动合并需高置信度 |
+| 11 | 参考项目与抓取端点的稳定性/许可 | 中 | 仅借鉴思路，不复制代码/不作为依赖；端点变更由自身适配器 + 契约测试兜底 |
+| 12 | 雪球登录态与反爬 | 高 | 独立适配器 + cookie 加密 + 失效告警 + 频率限制；浏览器只做兜底 |
 
 ---
 
@@ -1929,39 +2048,61 @@ stock / industry / macro / other
 ### 15.2 个股聚合伪代码
 
 ```python
+TOTAL_POINTS = 100.0
+MAX_REPORT_AGE_DAYS = 90.0
+BASE_WEIGHTS = {"stock": 0.4, "industry": 0.4, "macro": 0.2}
+HALF_LIFE_DAYS = {"stock": 7.0, "industry": 14.0, "macro": 30.0}
+
 def aggregate_stock(user, security, as_of, config):
     reports = load_candidate_reports(security, as_of, config)
     weighted = []
     for r in reports:
+        age = max(0.0, days_between(as_of, r.published_at))
+        if age > MAX_REPORT_AGE_DAYS:          # 90 天硬截止
+            continue
         w_author = get_effective_author_weight(user, r.author_id, config)
-        w_cat = config.category_weights[r.category]
-        recency = 0.5 ** (days_between(as_of, r.published_at) / config.half_life_days[r.category])
-        relevance = r.stock_relevance  # 多标的报告的相关度
-        e = r.confidence * (w_author ** 0.5) * w_cat * recency * relevance
-        weighted.append((r, e, r.score))
+        recency = 0.5 ** (age / HALF_LIFE_DAYS[r.category])
+        relevance = r.stock_relevance
+        w = r.confidence * (w_author ** 0.5) * relevance * recency
+        if w > 0:
+            weighted.append((r, w, r.score))
 
-    total_e = sum(e for _, e, _ in weighted)
-    if total_e == 0:
-        return None  # 样本不足
+    if not weighted:
+        return None
 
-    raw_score = sum(e * s for _, e, s in weighted) / total_e
-    n_eff = (total_e ** 2) / sum(e ** 2 for _, e, _ in weighted)
-    final_raw = raw_score * n_eff / (n_eff + config.shrinkage_k)
+    # 板块内加权信号
+    groups = group_by_category(weighted)
+    present = list(groups)
+    base_total = sum(BASE_WEIGHTS[c] for c in present)
 
-    category_scores = compute_per_category(weighted)
-    conclusion = llm_conclude(
+    total_points = 0.0
+    category_scores = []
+    for category, items in groups.items():
+        weight_sum = sum(w for _, w, _ in items)
+        signal = sum(w * s for _, w, s in items) / weight_sum
+        budget = TOTAL_POINTS * BASE_WEIGHTS[category] / base_total  # 缺失板块配额重分配
+        points = (signal + 1.0) / 2.0 * budget
+        total_points += points
+        category_scores.append(CategoryScore(
+            category=category,
+            budget_share=budget / TOTAL_POINTS,
+            budget_points=budget,
+            weighted_signal=signal,
+            points=points,
+            weight_sum=weight_sum,
+            article_count=len(items),
+        ))
+
+    total_points = round(min(TOTAL_POINTS, max(0.0, total_points)), 2)
+    final_score = total_points / (TOTAL_POINTS / 2.0) - 1.0  # 兼容字段 [-1, 1]
+
+    conclusion = llm_conclude(                  # 只写文字，不改分数
         security=security,
-        raw_score=final_raw,
-        top_reports=top_k(weighted, 20),
+        total_points=total_points,
         category_scores=category_scores,
+        top_reports=top_k(weighted, 20),
     )
-    adjustment = clamp(
-        conclusion.qualitative_score - final_raw,
-        -config.llm_adjust_limit,
-        config.llm_adjust_limit,
-    )
-    final_score = clamp(final_raw + adjustment, -1, 1)
-    return save_snapshot(...)
+    return save_snapshot(total_points, category_scores, conclusion, ...)
 ```
 
 ### 15.3 术语表
@@ -1971,8 +2112,12 @@ def aggregate_stock(user, security, as_of, config):
 | 主分类 | 报告在 UI 上的主标签：个股/行业/宏观 |
 | 多标签 | 报告实际涉及的多个类别，参与聚合 |
 | 有效博主权重 | 用户个人权重优先，否则用全局默认权重 |
-| 有效样本量 `n_eff` | 考虑权重分布后的等效报告数量 |
-| 收缩 | 样本少时把分数向 0 拉，避免过度自信 |
+| 文章权重 `w_i` | 置信度 × √作者权重 × 相关度 × 时间衰减 |
+| 板块配额 | 个股 40、行业 40、宏观 20；缺失板块按比例并入其余板块 |
+| 加权信号 `signal_c` | 板块内按文章权重求得的加权平均方向，范围 [-1, 1] |
+| 综合得分 `total_points` | 各板块得分之和，0 ~ 100，是用户唯一看到的分数 |
+| 时间衰减 | `0.5^(age / half_life)`，越新的文章权重越高 |
+| 有效样本量 `n_eff` | 考虑权重分布后的等效报告数量，仅作信息展示 |
 | canonical report | 转载聚类中被选为代表的那篇报告 |
 | 快照 | 某用户某股票某日的评分与依据的不可变记录 |
 
