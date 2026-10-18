@@ -250,6 +250,8 @@ Celery Beat 触发
   → 更新发现热门榜、失效当天信息流缓存与个股评分缓存
 ```
 
+**启动补抓：** 应用 `lifespan` 启动完成后创建后台任务，查询 `ingest_runs` 中最近一次 `run_type=crawl` 且 `status=success` 的 `finished_at`。若距今不足 `STARTUP_REFRESH_STALE_MINUTES`（默认 60 分钟），跳过；否则立即执行一次采集与分析。任务不阻塞启动和健康检查，服务关闭时会取消该任务。该机制主要服务本地开发，避免每次重启都重复抓取，同时保证间隔较久后启动即可看到最新内容。
+
 #### 数据流 B：用户信息流（读多写少）
 
 ```text
@@ -1372,6 +1374,8 @@ UI 展示示例：
 | 报告最大年龄 | 全局常量 `MAX_REPORT_AGE_DAYS` | 90 天 |
 | 聚合范围 | `users.scoring_config.scope` | all |
 | 是否纳入未关注博主 | `users.scoring_config.include_unfollowed` | true |
+| 启动自动补抓 | `STARTUP_REFRESH_ENABLED` | true |
+| 启动补抓新鲜度阈值 | `STARTUP_REFRESH_STALE_MINUTES` | 60 分钟 |
 
 ### 8.4 权重变更的影响
 

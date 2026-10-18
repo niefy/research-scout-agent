@@ -9,6 +9,7 @@ os.environ["SEED_ON_STARTUP"] = "false"
 os.environ["LLM_MOCK"] = "true"
 os.environ["JWT_SECRET"] = "test-secret-key-with-at-least-32-bytes"
 os.environ["DEBUG"] = "false"
+os.environ["STARTUP_REFRESH_ENABLED"] = "false"
 
 import pytest_asyncio  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402

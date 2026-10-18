@@ -64,12 +64,13 @@ make dev-frontend  # Vite     :5173（/api 代理到 :8000）
 
 - `LLM_MOCK=true`（默认）时使用确定性的本地分析器，无需 API Key，适合开发与测试；
 - 接入真实模型时设置 `LLM_MOCK=false`、`LLM_BASE_URL`、`LLM_API_KEY`，模型默认 `deepseek-v4-flash`；
-- 数据库迁移：`cd backend && alembic upgrade head`；本地默认 `AUTO_CREATE_TABLES=true`，启动时会自动建表。
+- 数据库迁移：`cd backend && alembic upgrade head`；本地默认 `AUTO_CREATE_TABLES=true`，启动时会自动建表；
+- **启动自动刷新**：后端启动后会在后台检查最近一次成功抓取的时间。1 小时内则跳过；超过 1 小时（或从未成功抓取）则立即抓取并分析。可用 `STARTUP_REFRESH_ENABLED`、`STARTUP_REFRESH_STALE_MINUTES` 调整，长任务不会阻塞服务启动。
 
 ### 测试与检查
 
 ```bash
-make test   # 后端 pytest（28 项）
+make test   # 后端 pytest（36 项）
 make lint   # ruff + vue-tsc
 make build  # 前端生产构建
 ```
@@ -87,6 +88,7 @@ make build  # 前端生产构建
 | 自选股、三层聚合评分、AI 结论、评分快照 | ✅ 已实现 |
 | 移动端前端（首页 / 自选 / 作者 / 我的 / 详情） | ✅ 已实现 |
 | Celery 定时采集与分析 | ✅ 已接入（Docker Compose 含 worker / beat） |
+| 启动时按新鲜度自动抓取 | ✅ 已实现，最近成功抓取 1 小时内跳过 |
 | 腾讯新闻、雪球、Twitter/X 适配器 | 🚧 路线图 |
 | 管理端 UI、PDF 研报解析、pgvector 语义检索 | 🚧 路线图 |
 

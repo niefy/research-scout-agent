@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     crawl_request_timeout: int = 15
     crawl_max_items_per_channel: int = 50
 
+    # Startup freshness check: crawl immediately when the last successful
+    # crawl is older than this threshold; skip otherwise.
+    startup_refresh_enabled: bool = True
+    startup_refresh_stale_minutes: int = 60
+
     @field_validator("database_url")
     @classmethod
     def _normalize_database_url(cls, value: str) -> str:
