@@ -222,10 +222,23 @@ __marimo__/
 # Node
 node_modules/
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Frontend build / cache / tooling artifacts
+.vite/
+coverage/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+*.local
 
 # Local databases
 *.db
 *.db-journal
+*.sqlite
+*.sqlite3
 
 # OS
 .DS_Store
