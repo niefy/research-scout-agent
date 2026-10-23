@@ -1,4 +1,10 @@
-import type { Category, Direction } from '@/api/types'
+import type {
+  Category,
+  Direction,
+  EvidenceLevel,
+  RelationReason,
+  ScoreScope,
+} from '@/api/types'
 
 const CATEGORY_LABELS: Record<Category, string> = {
   stock: '个股',
@@ -6,9 +12,59 @@ const CATEGORY_LABELS: Record<Category, string> = {
   macro: '宏观',
 }
 
+export const SCOPE_LABELS: Record<ScoreScope, string> = {
+  personal: '仅关注作者',
+  hybrid: '关注 + 精选',
+  all: '全站研报',
+}
+
+const EVIDENCE_LABELS: Record<EvidenceLevel, string> = {
+  direct: '个股证据',
+  industry: '行业参考',
+  macro: '宏观参考',
+  none: '证据不足',
+}
+
+const RELATION_REASON_LABELS: Record<RelationReason, string> = {
+  direct_mention: '直接提及个股',
+  stock_code_fallback: '股票代码关联',
+  industry_code: '所属行业关联',
+  macro: '宏观背景',
+}
+
+const GAP_LABELS: Record<string, string> = {
+  no_reports: '暂无相关研报',
+  missing_stock: '缺少个股直接证据',
+  missing_industry: '缺少行业证据',
+  macro_only: '仅有宏观证据',
+}
+
 export function categoryLabel(category: string | null | undefined): string {
   if (!category) return '未分类'
   return CATEGORY_LABELS[category as Category] ?? category
+}
+
+export function relationLabel(relation: string | null | undefined): string {
+  if (!relation) return '未关联'
+  return CATEGORY_LABELS[relation as Category] ?? relation
+}
+
+export function evidenceLabel(level: string | null | undefined): string {
+  if (!level) return EVIDENCE_LABELS.none
+  return EVIDENCE_LABELS[level as EvidenceLevel] ?? level
+}
+
+export function relationReasonLabel(reason: string | null | undefined): string {
+  if (!reason) return '关联'
+  return RELATION_REASON_LABELS[reason as RelationReason] ?? reason
+}
+
+export function scopeLabel(scope: ScoreScope): string {
+  return SCOPE_LABELS[scope]
+}
+
+export function gapLabel(gap: string): string {
+  return GAP_LABELS[gap] ?? gap
 }
 
 export function directionLabel(direction: Direction | null | undefined): string {

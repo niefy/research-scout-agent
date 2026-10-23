@@ -3,29 +3,34 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 
+import type { ScoreScope } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
-import { formatDate } from '@/utils/format'
+import { WATCHLIST_SCOPE_KEY } from '@/stores/watchlist'
+import { formatDate, scopeLabel } from '@/utils/format'
 
 const router = useRouter()
 const auth = useAuthStore()
 
 const categoryMeta = [
-  { key: 'stock', label: '个股', hint: '直接影响个股判断的研报' },
-  { key: 'industry', label: '行业', hint: '产业链、供需与竞争格局' },
-  { key: 'macro', label: '宏观', hint: '利率、政策与经济数据' },
+  { key: 'stock', label: '个股', hint: '直接提及个股或通过股票代码关联的研报' },
+  { key: 'industry', label: '行业', hint: '股票所属行业的供需与竞争格局' },
+  { key: 'macro', label: '宏观', hint: '利率、政策与经济数据等全局背景' },
 ] as const
 
 const defaultWeights: Record<string, number> = { stock: 0.4, industry: 0.4, macro: 0.2 }
 const defaultHalfLives: Record<string, number> = { stock: 7, industry: 14, macro: 30 }
+const scopeOptions: ScoreScope[] = ['personal', 'hybrid', 'all']
 
 const profilePopup = ref(false)
 const nicknameDraft = ref('')
 const profileSaving = ref(false)
+const digestSaving = ref(false)
 
 const scoringPopup = ref(false)
 const scoringSaving = ref(false)
+const defaultScope = ref<ScoreScope>('hybrid')
 const scoringForm = reactive({
-  category_weights: { ...defaultWeights },
+  relation_weights: { ...defaultWeights },
   half_life_days: { ...defaultHalfLives },
 })
 
@@ -42,8 +47,14 @@ const initial = computed(() => (user.value?.nickname ?? '?').trim().slice(0, 1) 
 
 const effectiveWeights = computed<Record<string, number>>(() => ({
   ...defaultWeights,
-  ...(user.value?.scoring_config?.category_weights ?? {}),
+  ...(user.value?.scoring_config?.relation_weights ??
+    user.value?.scoring_config?.category_weights ??
+    {}),
 }))
+
+const effectiveScope = computed<ScoreScope>(
+  () => user.value?.scoring_config?.default_scope ?? 'hybrid',
+)
 
 function normalizedPercent(weights: Record<string, number>, key: string): string {
   const total = categoryMeta.reduce((sum, meta) => sum + (weights[meta.key] ?? 0), 0) || 1
@@ -74,12 +85,14 @@ async function saveProfile(): Promise<void> {
 
 function openScoring(): void {
   const config = user.value?.scoring_config ?? {}
+  const storedWeights = config.relation_weights ?? config.category_weights ?? {}
   for (const meta of categoryMeta) {
-    scoringForm.category_weights[meta.key] =
-      config.category_weights?.[meta.key] ?? defaultWeights[meta.key]
+    scoringForm.relation_weights[meta.key] =
+      storedWeights[meta.key] ?? defaultWeights[meta.key]
     scoringForm.half_life_days[meta.key] =
       config.half_life_days?.[meta.key] ?? defaultHalfLives[meta.key]
   }
+  defaultScope.value = config.default_scope ?? 'hybrid'
   scoringPopup.value = true
 }
 
@@ -88,16 +101,35 @@ async function saveScoring(): Promise<void> {
   try {
     await auth.updateProfile({
       scoring_config: {
-        category_weights: { ...scoringForm.category_weights },
+        relation_weights: { ...scoringForm.relation_weights },
         half_life_days: { ...scoringForm.half_life_days },
+        default_scope: defaultScope.value,
       },
     })
+    localStorage.setItem(WATCHLIST_SCOPE_KEY, defaultScope.value)
     scoringPopup.value = false
     showToast('评分偏好已保存')
   } catch (error) {
     showToast(error instanceof Error ? error.message : '保存失败')
   } finally {
     scoringSaving.value = false
+  }
+}
+
+async function toggleDigestEmail(enabled: boolean): Promise<void> {
+  if (digestSaving.value) return
+  if (enabled && !user.value?.email) {
+    showToast('请先绑定邮箱')
+    return
+  }
+  digestSaving.value = true
+  try {
+    await auth.updateProfile({ digest_email_enabled: enabled })
+    showToast(enabled ? '已开启每日邮件简报' : '已关闭每日邮件简报')
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '设置失败')
+  } finally {
+    digestSaving.value = false
   }
 }
 
@@ -162,7 +194,7 @@ onMounted(async () => {
     <header class="hero settings-hero">
       <span class="hero__eyebrow">ACCOUNT</span>
       <h1 class="hero__title">我的</h1>
-      <p class="hero__subtitle">作者权重、品类偏好与账户设置</p>
+      <p class="hero__subtitle">作者权重、评分范围与每日简报</p>
     </header>
 
     <section class="profile-card card">
@@ -192,11 +224,14 @@ onMounted(async () => {
             <van-icon name="chart-trending-o" size="16" />
           </span>
           <span class="settings-row__body">
-            <span class="settings-row__label">板块配额与半衰期</span>
+            <span class="settings-row__label">关系配额与半衰期</span>
             <span class="settings-row__value">
               个股 {{ normalizedPercent(effectiveWeights, 'stock') }} ·
               行业 {{ normalizedPercent(effectiveWeights, 'industry') }} ·
               宏观 {{ normalizedPercent(effectiveWeights, 'macro') }}
+            </span>
+            <span class="settings-row__value">
+              默认范围 · {{ scopeLabel(effectiveScope) }}
             </span>
           </span>
           <van-icon name="arrow" size="13" class="settings-row__arrow" />
@@ -207,11 +242,31 @@ onMounted(async () => {
             <van-icon name="friends-o" size="16" />
           </span>
           <span class="settings-row__body">
-            <span class="settings-row__label">作者权重</span>
-            <span class="settings-row__value">在「作者」页调整每位博主的关注权重</span>
+            <span class="settings-row__label">作者权重与精选</span>
+            <span class="settings-row__value">调整关注权重，或从系统精选与雪球导入作者</span>
           </span>
           <van-icon name="arrow" size="13" class="settings-row__arrow" />
         </button>
+
+        <div class="settings-row settings-row--static">
+          <span class="settings-row__icon settings-row__icon--amber">
+            <van-icon name="envelop-o" size="16" />
+          </span>
+          <span class="settings-row__body">
+            <span class="settings-row__label">每日邮件简报</span>
+            <span class="settings-row__value">
+              {{ user?.email ? `发送到 ${user.email}` : '未绑定邮箱' }}
+            </span>
+          </span>
+          <van-switch
+            :model-value="user?.digest_email_enabled ?? false"
+            :loading="digestSaving"
+            :disabled="!user?.email"
+            size="20px"
+            active-color="#c2410c"
+            @update:model-value="toggleDigestEmail"
+          />
+        </div>
 
         <button type="button" class="settings-row" @click="router.push('/watchlist')">
           <span class="settings-row__icon settings-row__icon--green">
@@ -254,7 +309,8 @@ onMounted(async () => {
           </div>
         </div>
         <p class="about-card__text">
-          内容每天从多个渠道采集，经 LLM 完成分类、评分与摘要；你的关注和权重只影响个人排序与自选聚合，不会改变全局分析结果。
+          系统只定向抓取你关注的作者与系统精选作者；每篇文章仅在真正关联到某只股票时参与该股评分，
+          个股、行业、宏观证据分别计价。内容经 LLM 完成分类、评分与摘要，你的关注和权重只影响个人聚合。
         </p>
         <p class="about-card__disclaimer">
           所有内容与评分仅供研究参考，不构成任何投资建议。市场有风险，决策需独立判断。
@@ -299,19 +355,32 @@ onMounted(async () => {
       <div class="sheet sheet--scroll">
         <h3 class="sheet__title">评分偏好</h3>
         <p class="sheet__subtitle">
-          板块配额决定综合分中个股 / 行业 / 宏观的满分占比（默认 40 / 40 / 20，保存后按比例归一化）；
-          半衰期决定文章权重随发布时间的衰减速度，越短衰减越快。
+          关系配额决定综合分中个股 / 行业 / 宏观证据的满分占比（默认 40 / 40 / 20，
+          缺失关系会按比例并入其余关系）；半衰期决定文章权重随发布时间的衰减速度。
         </p>
+
+        <span class="sheet-label">默认评分范围</span>
+        <div class="type-options">
+          <button
+            v-for="option in scopeOptions"
+            :key="option"
+            type="button"
+            :class="{ active: defaultScope === option }"
+            @click="defaultScope = option"
+          >
+            {{ scopeLabel(option) }}
+          </button>
+        </div>
 
         <div v-for="meta in categoryMeta" :key="meta.key" class="scoring-block">
           <div class="scoring-block__head">
             <span class="scoring-block__label">{{ meta.label }}</span>
             <span class="scoring-block__weight mono">
-              {{ normalizedPercent(scoringForm.category_weights, meta.key) }}
+              {{ normalizedPercent(scoringForm.relation_weights, meta.key) }}
             </span>
           </div>
           <van-slider
-            v-model="scoringForm.category_weights[meta.key]"
+            v-model="scoringForm.relation_weights[meta.key]"
             :min="0"
             :max="1"
             :step="0.05"
@@ -499,6 +568,14 @@ onMounted(async () => {
   background: #fafcff;
 }
 
+.settings-row--static {
+  cursor: default;
+}
+
+.settings-row--static:active {
+  background: transparent;
+}
+
 .settings-row__icon {
   display: grid;
   place-items: center;
@@ -669,6 +746,30 @@ onMounted(async () => {
   margin: 12px 0 0;
   font-size: 11px;
   color: var(--rs-muted);
+}
+
+.type-options {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.type-options button {
+  padding: 7px 14px;
+  border: 1px solid var(--rs-line);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12px;
+  color: var(--rs-muted);
+  cursor: pointer;
+}
+
+.type-options button.active {
+  border-color: var(--rs-navy);
+  background: var(--rs-navy);
+  color: #fff;
+  font-weight: 600;
 }
 
 .scoring-block {

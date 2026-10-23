@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import admin, auth, authors, feed, health, watchlist
+from app.api.v1 import admin, auth, authors, digest, feed, health, watchlist
 from app.core.config import settings
 from app.db.session import async_session_factory, close_db, init_db
 from app.services.seed import seed_base, seed_demo
@@ -77,6 +77,7 @@ def create_app() -> FastAPI:
     application.include_router(auth.router, prefix=api_prefix)
     application.include_router(authors.router, prefix=api_prefix)
     application.include_router(feed.router, prefix=api_prefix)
+    application.include_router(digest.router, prefix=api_prefix)
     application.include_router(watchlist.router, prefix=api_prefix)
     application.include_router(admin.router, prefix=api_prefix)
 

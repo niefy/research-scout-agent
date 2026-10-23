@@ -64,6 +64,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function updateProfile(payload: {
     nickname?: string
     scoring_config?: User['scoring_config']
+    digest_email_enabled?: boolean
   }): Promise<User> {
     const me = await api.patch<User>('/users/me', payload)
     persistUser(me)

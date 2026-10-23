@@ -1,29 +1,30 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { Category, CategoryScore } from '@/api/types'
-import { categoryLabel } from '@/utils/format'
+import type { Relation, RelationScore } from '@/api/types'
+import { relationLabel } from '@/utils/format'
 
 const props = defineProps<{
-  categories: CategoryScore[]
+  relations: RelationScore[]
   total: number
   reportCount: number
+  displayLabel: string
 }>()
 
-const ORDER: Category[] = ['stock', 'industry', 'macro']
-const COLORS: Record<Category, string> = {
+const ORDER: Relation[] = ['stock', 'industry', 'macro']
+const COLORS: Record<Relation, string> = {
   stock: '#2a78d6',
   industry: '#eb6834',
   macro: '#1baf7a',
 }
 
 const rows = computed(() =>
-  ORDER.map((category) => {
-    const score = props.categories.find((item) => item.category === category)
+  ORDER.map((relation) => {
+    const score = props.relations.find((item) => item.relation === relation)
     return {
-      category,
-      label: categoryLabel(category),
-      color: COLORS[category],
+      relation,
+      label: relationLabel(relation),
+      color: COLORS[relation],
       score,
       points: score?.points ?? 0,
       budget: score?.budget_points ?? 0,
@@ -43,7 +44,7 @@ const segments = computed(() => {
   return visibleRows.value.map((row) => {
     const width = Math.max(0, row.points)
     const segment = {
-      key: row.category,
+      key: row.relation,
       color: row.color,
       x: cursor,
       width: Math.max(0, width - 2),
@@ -67,21 +68,19 @@ function signalText(value: number): string {
   <section class="section">
     <div class="section__head">
       <h2 class="section__title">评分构成</h2>
-      <span class="section__hint">{{ reportCount }} 篇研报</span>
+      <span class="section__hint">{{ reportCount }} 篇相关研报</span>
     </div>
 
     <div class="card composition">
       <div class="composition__summary">
         <div>
-          <p class="composition__eyebrow">综合得分</p>
+          <p class="composition__eyebrow">{{ displayLabel }}</p>
           <p class="composition__total mono">
             {{ total.toFixed(1) }}
             <span>/ 100</span>
           </p>
         </div>
-        <p class="composition__note">
-          未得分 {{ remainder.toFixed(1) }}
-        </p>
+        <p class="composition__note">未得分 {{ remainder.toFixed(1) }}</p>
       </div>
 
       <svg
@@ -114,14 +113,14 @@ function signalText(value: number): string {
       </svg>
 
       <div class="composition__legend">
-        <div v-for="row in rows" :key="row.category" class="composition__legend-row">
+        <div v-for="row in rows" :key="row.relation" class="composition__legend-row">
           <span
             class="composition__dot"
             :style="{ background: row.missing ? '#cbd5e1' : row.color }"
           />
           <span class="composition__legend-label">{{ row.label }}</span>
           <span v-if="row.missing" class="composition__missing">
-            无相关研报 · 配额已并入其他板块
+            无相关证据 · 配额已并入其他关系
           </span>
           <template v-else>
             <span class="composition__legend-value mono">
@@ -139,9 +138,9 @@ function signalText(value: number): string {
       </div>
 
       <div class="composition__meters">
-        <div v-for="row in visibleRows" :key="row.category" class="composition__meter-row">
+        <div v-for="row in visibleRows" :key="row.relation" class="composition__meter-row">
           <div class="composition__meter-head">
-            <span>{{ row.label }}板块</span>
+            <span>{{ row.label }}证据</span>
             <span class="mono">加权信号 {{ signalText(row.signal) }}</span>
           </div>
           <div class="composition__meter">
@@ -157,8 +156,8 @@ function signalText(value: number): string {
       </div>
 
       <p class="composition__formula">
-        板块配额默认 40 / 40 / 20；缺失板块按比例并入其余板块。板块得分 =
-        (加权信号 + 1) ÷ 2 × 板块配额。
+        关系配额默认个股 40 / 行业 40 / 宏观 20；缺失关系按比例并入其余关系。
+        关系得分 = (加权信号 + 1) ÷ 2 × 关系配额。同一篇文章对同一只股票只按最高优先级计入一次。
       </p>
     </div>
   </section>

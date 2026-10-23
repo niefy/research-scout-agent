@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 
 from app.api.deps import DB, CurrentUser
-from app.models.author import Author
+from app.models.author import Author, AuthorIdentity
 from app.models.personalization import AuthorFollow
 from app.schemas.author import (
     AuthorCreate,
     AuthorDetail,
     AuthorFollowIn,
     AuthorFollowOut,
+    AuthorImportIn,
+    AuthorImportOut,
     AuthorOut,
     AuthorUpdate,
+    RecommendedAuthorOut,
 )
 from app.schemas.common import Message, Page
 from app.services import authors as author_service
+from app.services.author_crawl import backfill_author
 
 router = APIRouter(prefix="/authors", tags=["authors"])
 
@@ -26,6 +30,7 @@ async def list_authors(
     user: CurrentUser,
     q: str | None = Query(default=None, max_length=64),
     followed: bool = False,
+    curated: bool = False,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> Page[AuthorOut]:
@@ -38,6 +43,9 @@ async def list_authors(
         count_stmt = count_stmt.join(AuthorFollow, AuthorFollow.author_id == Author.id).where(
             AuthorFollow.user_id == user.id
         )
+    if curated:
+        stmt = stmt.where(Author.is_curated.is_(True))
+        count_stmt = count_stmt.where(Author.is_curated.is_(True))
     if q:
         pattern = f"%{q.strip()}%"
         condition = or_(Author.canonical_name.ilike(pattern), Author.normalized_name.ilike(pattern))
@@ -80,6 +88,53 @@ async def list_following(session: DB, user: CurrentUser) -> list[AuthorFollowOut
         )
         for follow, author in rows
     ]
+
+
+@router.get("/recommended", response_model=list[RecommendedAuthorOut])
+async def recommended_authors(
+    session: DB,
+    user: CurrentUser,
+    limit: int = Query(default=10, ge=1, le=50),
+) -> list[RecommendedAuthorOut]:
+    rows = await author_service.recommended_authors(session, user.id, limit=limit)
+    return [RecommendedAuthorOut(**row) for row in rows]
+
+
+@router.post("/import", response_model=AuthorImportOut, status_code=status.HTTP_201_CREATED)
+async def import_author(
+    payload: AuthorImportIn,
+    session: DB,
+    user: CurrentUser,
+    background_tasks: BackgroundTasks,
+) -> AuthorImportOut:
+    if not payload.external_id and not payload.profile_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="external_id or profile_url is required",
+        )
+    try:
+        author, follow, created, newly_followed = await author_service.import_xueqiu_author(
+            session,
+            user_id=user.id,
+            external_id=payload.external_id,
+            profile_url=payload.profile_url,
+            display_name=payload.display_name,
+            follow=payload.follow,
+            weight=payload.weight,
+        )
+    except author_service.AuthorImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    backfill_scheduled = bool(payload.follow and newly_followed and follow is not None)
+    if backfill_scheduled:
+        background_tasks.add_task(backfill_author, author.id)
+    return AuthorImportOut(
+        author=AuthorOut.model_validate(author),
+        followed=follow is not None,
+        created=created,
+        backfill_scheduled=backfill_scheduled,
+    )
 
 
 @router.post("", response_model=AuthorDetail, status_code=status.HTTP_201_CREATED)
@@ -146,10 +201,12 @@ async def follow_author(
     payload: AuthorFollowIn,
     session: DB,
     user: CurrentUser,
+    background_tasks: BackgroundTasks,
 ) -> AuthorFollowOut:
     author = await session.get(Author, author_id)
     if author is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="author not found")
+    existing = await author_service.get_follow(session, user.id, author_id)
     follow = await author_service.follow_author(
         session,
         user.id,
@@ -157,6 +214,12 @@ async def follow_author(
         weight=payload.weight,
         notify=payload.notify,
     )
+    if existing is None and author.crawl_enabled:
+        has_identity = await session.scalar(
+            select(AuthorIdentity.id).where(AuthorIdentity.author_id == author_id).limit(1)
+        )
+        if has_identity is not None:
+            background_tasks.add_task(backfill_author, author_id)
     return AuthorFollowOut(
         author=AuthorOut.model_validate(author),
         weight=follow.weight,

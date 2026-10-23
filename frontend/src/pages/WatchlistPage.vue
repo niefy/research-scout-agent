@@ -4,21 +4,24 @@ import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 
 import { api } from '@/api/client'
-import type { Security, WatchlistItem } from '@/api/types'
+import type { ScoreScope, Security, WatchlistItem } from '@/api/types'
+import EvidenceBadge from '@/components/EvidenceBadge.vue'
+import ScoreDelta from '@/components/ScoreDelta.vue'
 import ScoreRing from '@/components/ScoreRing.vue'
-import { categoryLabel, formatWindow } from '@/utils/format'
+import { formatWindow, relationLabel } from '@/utils/format'
 import { useWatchlistStore } from '@/stores/watchlist'
 
 const router = useRouter()
 const watchlist = useWatchlistStore()
 
 const windows: Array<'7d' | '30d' | '90d'> = ['7d', '30d', '90d']
-const scopes: Array<{ value: 'all' | 'followed'; label: string }> = [
-  { value: 'all', label: '全部研报' },
-  { value: 'followed', label: '仅关注作者' },
+const scopes: Array<{ value: ScoreScope; label: string }> = [
+  { value: 'personal', label: '仅关注' },
+  { value: 'hybrid', label: '关注 + 精选' },
+  { value: 'all', label: '全站' },
 ]
 
-const categoryOrder = ['stock', 'industry', 'macro']
+const relationOrder = ['stock', 'industry', 'macro']
 
 const addPopup = ref(false)
 const searchQ = ref('')
@@ -41,10 +44,21 @@ function openStock(code: string): void {
 }
 
 function countsLabel(item: WatchlistItem): Array<{ key: string; label: string; count: number }> {
-  const counts = item.score?.category_counts ?? {}
-  return categoryOrder
-    .map((key) => ({ key, label: categoryLabel(key), count: counts[key] ?? 0 }))
+  const counts = item.score?.relation_counts ?? {}
+  return relationOrder
+    .map((key) => ({ key, label: relationLabel(key), count: counts[key] ?? 0 }))
     .filter((entry) => entry.count > 0)
+}
+
+function gapHints(item: WatchlistItem): string[] {
+  const score = item.score
+  if (!score) return []
+  if (score.report_count === 0) return ['暂无相关研报']
+  const hints: string[] = []
+  if (score.evidence.stock_count === 0) hints.push('缺少个股直接证据')
+  if (score.evidence.industry_count === 0) hints.push('缺少行业证据')
+  if (score.evidence.is_macro_only) hints.push('仅宏观参考')
+  return hints
 }
 
 async function removeItem(item: WatchlistItem): Promise<void> {
@@ -128,7 +142,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <h1 class="hero__title">自选</h1>
-      <p class="hero__subtitle">个股、行业、宏观三层信号，汇成一个分数</p>
+      <p class="hero__subtitle">只看真正关联到这只股票的个股、行业与宏观证据</p>
 
       <div class="watch-scope">
         <button
@@ -190,8 +204,19 @@ onBeforeUnmount(() => {
                   {{ item.security.code }}
                   <span class="stock-card__exchange">{{ item.security.exchange }}</span>
                 </p>
+                <p class="stock-card__delta">
+                  <ScoreDelta
+                    :value="item.score?.score_delta"
+                    :since="item.score?.delta_since"
+                  />
+                </p>
               </div>
-              <ScoreRing :value="item.score?.display_score" :size="62" :stroke="5" caption="综合得分" />
+              <ScoreRing
+                :value="item.score?.display_score"
+                :size="62"
+                :stroke="5"
+                :caption="item.score?.display_label ?? '综合得分'"
+              />
             </div>
 
             <p class="stock-card__conclusion" :class="scoreTone(item.score?.display_score)">
@@ -200,8 +225,13 @@ onBeforeUnmount(() => {
               </span>
             </p>
 
-            <div class="stock-card__footer">
-              <div class="tag-row">
+            <div class="stock-card__signals">
+              <EvidenceBadge
+                v-if="item.score"
+                :evidence="item.score.evidence"
+                class="stock-card__evidence"
+              />
+              <div class="tag-row stock-card__counts">
                 <span
                   v-for="entry in countsLabel(item)"
                   :key="entry.key"
@@ -212,6 +242,13 @@ onBeforeUnmount(() => {
                 </span>
                 <span v-if="!countsLabel(item).length" class="chip chip--outline">暂无信号</span>
               </div>
+            </div>
+
+            <div class="stock-card__footer">
+              <span v-if="gapHints(item).length" class="stock-card__gaps">
+                {{ gapHints(item).join(' · ') }}
+              </span>
+              <span v-else class="stock-card__gaps">证据覆盖完整</span>
               <span class="stock-card__count">
                 {{ item.score?.report_count ?? 0 }} 篇
               </span>
@@ -410,6 +447,28 @@ onBeforeUnmount(() => {
   font-size: 9px;
 }
 
+.stock-card__delta {
+  margin: 6px 0 0;
+}
+
+.stock-card__signals {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.stock-card__evidence {
+  flex: none;
+}
+
+.stock-card__counts {
+  flex: 1;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
 .stock-card__conclusion {
   margin: 12px 0 0;
   padding: 10px 12px;
@@ -442,7 +501,12 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 11px;
+  margin-top: 9px;
+}
+
+.stock-card__gaps {
+  font-size: 9.5px;
+  color: var(--rs-muted);
 }
 
 .stock-card__count {

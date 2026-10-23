@@ -14,7 +14,7 @@ def _input(
     *,
     score: float = 0.5,
     confidence: float = 0.8,
-    category: str = "stock",
+    relation: str = "stock",
     author_weight: float = 1.0,
     age_days: float = 0.0,
     relevance: float = 1.0,
@@ -22,7 +22,7 @@ def _input(
     return ScoreInput(
         report_id=report_id,
         title=f"report-{report_id}",
-        category=category,
+        relation=relation,
         score=score,
         confidence=confidence,
         author_weight=author_weight,
@@ -56,15 +56,15 @@ def test_more_reports_do_not_change_the_normalized_score():
     assert one.n_eff < many.n_eff
 
 
-def test_category_budgets_are_40_40_20():
+def test_relation_budgets_are_40_40_20():
     result = aggregate_scores(
         [
-            _input(1, score=0.0, category="stock"),
-            _input(2, score=0.0, category="industry"),
-            _input(3, score=0.0, category="macro"),
+            _input(1, score=0.0, relation="stock"),
+            _input(2, score=0.0, relation="industry"),
+            _input(3, score=0.0, relation="macro"),
         ]
     )
-    scores = {item.category: item for item in result.category_scores}
+    scores = {item.relation: item for item in result.relation_scores}
     assert scores["stock"].budget_points == pytest.approx(40)
     assert scores["industry"].budget_points == pytest.approx(40)
     assert scores["macro"].budget_points == pytest.approx(20)
@@ -76,21 +76,21 @@ def test_category_budgets_are_40_40_20():
     assert result.final_score == pytest.approx(0)
 
 
-def test_missing_categories_redistribute_their_budget():
-    only_stock = aggregate_scores([_input(1, score=0.5, category="stock")])
-    assert len(only_stock.category_scores) == 1
-    stock = only_stock.category_scores[0]
+def test_missing_relations_redistribute_their_budget():
+    only_stock = aggregate_scores([_input(1, score=0.5, relation="stock")])
+    assert len(only_stock.relation_scores) == 1
+    stock = only_stock.relation_scores[0]
     assert stock.budget_share == pytest.approx(1.0)
     assert stock.budget_points == pytest.approx(100)
     assert only_stock.total_points == pytest.approx(75)
 
     stock_and_macro = aggregate_scores(
         [
-            _input(1, score=0.0, category="stock"),
-            _input(2, score=0.0, category="macro"),
+            _input(1, score=0.0, relation="stock"),
+            _input(2, score=0.0, relation="macro"),
         ]
     )
-    shares = {item.category: item.budget_share for item in stock_and_macro.category_scores}
+    shares = {item.relation: item.budget_share for item in stock_and_macro.relation_scores}
     assert shares["stock"] == pytest.approx(2 / 3, abs=1e-3)
     assert shares["macro"] == pytest.approx(1 / 3, abs=1e-3)
 
@@ -98,9 +98,9 @@ def test_missing_categories_redistribute_their_budget():
 def test_total_score_never_exceeds_100():
     result = aggregate_scores(
         [
-            _input(1, score=1.0, category="stock"),
-            _input(2, score=1.0, category="industry"),
-            _input(3, score=1.0, category="macro"),
+            _input(1, score=1.0, relation="stock"),
+            _input(2, score=1.0, relation="industry"),
+            _input(3, score=1.0, relation="macro"),
         ]
     )
     assert result.total_points == pytest.approx(100)
@@ -117,7 +117,7 @@ def test_recent_reports_dominate_older_ones():
         now=now,
     )
     # Stock half-life is 7 days, so the 30-day-old bearish call is heavily decayed.
-    assert result.category_scores[0].weighted_signal > 0.85
+    assert result.relation_scores[0].weighted_signal > 0.85
 
 
 def test_reports_older_than_three_months_are_excluded():

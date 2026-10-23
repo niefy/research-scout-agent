@@ -68,6 +68,7 @@ async def update_me(payload: UserUpdate, user: CurrentUser, session: DB) -> User
         user,
         nickname=payload.nickname,
         scoring_config=payload.scoring_config,
+        digest_email_enabled=payload.digest_email_enabled,
     )
     return UserOut.model_validate(updated)
 

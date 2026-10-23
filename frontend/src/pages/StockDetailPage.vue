@@ -4,26 +4,46 @@ import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 
 import { api } from '@/api/client'
-import type { ScoreBreakdownItem, StockDetail } from '@/api/types'
+import type {
+  ScoreBreakdownItem,
+  ScoreScope,
+  StockDetail,
+  StockHistory,
+  StockWindow,
+} from '@/api/types'
+import EvidenceBadge from '@/components/EvidenceBadge.vue'
 import ReportCard from '@/components/ReportCard.vue'
 import ScoreComposition from '@/components/ScoreComposition.vue'
+import ScoreDelta from '@/components/ScoreDelta.vue'
 import ScoreRing from '@/components/ScoreRing.vue'
-import { categoryLabel, formatWindow } from '@/utils/format'
+import ScoreSparkline from '@/components/ScoreSparkline.vue'
+import { useAuthStore } from '@/stores/auth'
 import { useWatchlistStore } from '@/stores/watchlist'
+import { formatWindow, relationLabel, relationReasonLabel } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const watchlist = useWatchlistStore()
 
 const detail = ref<StockDetail | null>(null)
+const history = ref<StockHistory | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
-const scope = ref<'all' | 'followed'>('all')
-const timeWindow = ref<'7d' | '30d' | '90d'>('30d')
+const scope = ref<ScoreScope>(
+  auth.user?.scoring_config?.default_scope ?? 'hybrid',
+)
+const timeWindow = ref<StockWindow>('30d')
 const showAllBreakdown = ref(false)
 const watchSaving = ref(false)
+const feedbackSaving = ref<number | null>(null)
 
-const windows: Array<'7d' | '30d' | '90d'> = ['7d', '30d', '90d']
+const windows: StockWindow[] = ['7d', '30d', '90d']
+const scopes: Array<{ value: ScoreScope; label: string }> = [
+  { value: 'personal', label: '仅关注' },
+  { value: 'hybrid', label: '关注 + 精选' },
+  { value: 'all', label: '全站' },
+]
 
 const security = computed(() => detail.value?.security ?? null)
 const score = computed(() => detail.value?.score ?? null)
@@ -49,13 +69,6 @@ const visibleBreakdown = computed(() =>
   showAllBreakdown.value ? sortedBreakdown.value : sortedBreakdown.value.slice(0, 6),
 )
 
-const categoryChips = computed(() => {
-  const counts = score.value?.category_counts ?? {}
-  return ['stock', 'industry', 'macro']
-    .map((key) => ({ key, label: categoryLabel(key), count: counts[key] ?? 0 }))
-    .filter((entry) => entry.count > 0)
-})
-
 const displayScore = computed(() =>
   score.value?.display_score === undefined ? null : score.value.display_score,
 )
@@ -66,6 +79,40 @@ const scoreTone = computed(() => {
   if (value >= 55) return 'up'
   if (value <= 45) return 'down'
   return 'neutral'
+})
+
+const evidenceWarning = computed(() => {
+  const evidence = score.value?.evidence
+  if (!evidence) return ''
+  if (evidence.is_macro_only) {
+    return '当前只有宏观证据，分数仅作宏观参考，不构成个股综合结论。'
+  }
+  if (evidence.is_insufficient) {
+    return '暂无个股或行业证据，暂不展示综合分。'
+  }
+  if (evidence.stock_count === 0) {
+    return '当前缺少个股直接证据，以下为行业参考。'
+  }
+  return ''
+})
+
+const coverage = computed(() => {
+  const data = score.value?.evidence.coverage
+  if (!data) return []
+  return [
+    { key: 'stock', label: '个股', covered: Boolean(data.stock) },
+    { key: 'industry', label: '行业', covered: Boolean(data.industry) },
+    { key: 'macro', label: '宏观', covered: Boolean(data.macro) },
+  ]
+})
+
+const historyDeltas = computed(() => {
+  const deltas = history.value?.deltas ?? {}
+  return [
+    { key: '1d', label: '1日', value: deltas['1d'] ?? null },
+    { key: '7d', label: '7日', value: deltas['7d'] ?? null },
+    { key: '30d', label: '30日', value: deltas['30d'] ?? null },
+  ]
 })
 
 function weightPercent(item: ScoreBreakdownItem): number {
@@ -81,15 +128,31 @@ function goBack(): void {
   else void router.push('/watchlist')
 }
 
+async function loadHistory(): Promise<void> {
+  history.value = null
+  try {
+    history.value = await api.get<StockHistory>(
+      `/stocks/${route.params.code}/history`,
+      { scope: scope.value, window: timeWindow.value, days: 90 },
+    )
+  } catch {
+    // History is advisory; keep the deterministic score visible if it fails.
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    detail.value = await api.get<StockDetail>(`/stocks/${route.params.code}`, {
-      scope: scope.value,
-      window: timeWindow.value,
-      limit: 20,
-    })
+    const [stockDetail] = await Promise.all([
+      api.get<StockDetail>(`/stocks/${route.params.code}`, {
+        scope: scope.value,
+        window: timeWindow.value,
+        limit: 20,
+      }),
+      loadHistory(),
+    ])
+    detail.value = stockDetail
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败'
   } finally {
@@ -97,16 +160,33 @@ async function load(): Promise<void> {
   }
 }
 
-async function changeScope(next: 'all' | 'followed'): Promise<void> {
+async function changeScope(next: ScoreScope): Promise<void> {
   if (scope.value === next) return
   scope.value = next
   await load()
 }
 
-async function changeWindow(next: '7d' | '30d' | '90d'): Promise<void> {
+async function changeWindow(next: StockWindow): Promise<void> {
   if (timeWindow.value === next) return
   timeWindow.value = next
   await load()
+}
+
+async function markIrrelevant(item: ScoreBreakdownItem): Promise<void> {
+  if (!security.value || feedbackSaving.value !== null) return
+  feedbackSaving.value = item.report_id
+  try {
+    await api.post(`/stocks/${security.value.code}/feedback`, {
+      report_id: item.report_id,
+      action: 'irrelevant',
+    })
+    showToast('已从这只股票的评分中排除')
+    await load()
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : '操作失败')
+  } finally {
+    feedbackSaving.value = null
+  }
 }
 
 async function toggleWatchlist(): Promise<void> {
@@ -139,7 +219,7 @@ onMounted(async () => {
       <button type="button" class="stock-nav__back" aria-label="返回" @click="goBack">
         <van-icon name="arrow-left" size="18" />
       </button>
-      <span class="stock-nav__title">综合评分</span>
+      <span class="stock-nav__title">个股研究</span>
       <button
         v-if="security"
         type="button"
@@ -155,8 +235,8 @@ onMounted(async () => {
     </header>
 
     <div v-if="loading" class="stock-loading">
-      <van-loading size="24" vertical>正在聚合多篇研报…</van-loading>
-      <p class="stock-loading__hint">首次生成 AI 结论可能需要几秒</p>
+      <van-loading size="24" vertical>正在聚合相关研报…</van-loading>
+      <p class="stock-loading__hint">评分由相关证据、作者权重与时间衰减共同决定</p>
     </div>
 
     <div v-else-if="error" class="empty-state">
@@ -169,52 +249,80 @@ onMounted(async () => {
     <template v-else-if="detail && score">
       <section class="stock-hero">
         <div class="stock-hero__identity">
-          <p class="stock-hero__eyebrow">WEIGHTED SIGNAL</p>
+          <p class="stock-hero__eyebrow">EVIDENCE-WEIGHTED SIGNAL</p>
           <h1 class="stock-hero__name">{{ detail.security.name }}</h1>
           <p class="stock-hero__code mono">
             {{ detail.security.code }}
             <span class="stock-hero__exchange">{{ detail.security.exchange }}</span>
           </p>
+          <p class="stock-hero__delta">
+            <ScoreDelta
+              :value="score.score_delta"
+              :since="score.delta_since"
+              prefix="较上次"
+            />
+          </p>
         </div>
-        <ScoreRing :value="displayScore" :size="96" :stroke="8" caption="综合得分" />
+        <ScoreRing
+          :value="displayScore"
+          :size="96"
+          :stroke="8"
+          :caption="score.display_label"
+        />
       </section>
 
       <section class="stock-conclusion card">
         <div class="stock-conclusion__head">
           <span class="stock-conclusion__badge">
             <van-icon name="magic" size="11" />
-            AI 结论
+            {{ score.evidence.is_macro_only ? '宏观参考' : '综合结论' }}
           </span>
           <span class="stock-conclusion__meta">
-            {{ score.report_count }} 篇研报 · 有效样本 {{ score.n_eff.toFixed(1) }}
+            {{ score.report_count }} 篇相关研报 · 有效样本 {{ score.n_eff.toFixed(1) }}
           </span>
         </div>
         <p class="stock-conclusion__text" :class="scoreTone">
           {{ score.conclusion || '暂无足够研报形成结论。' }}
         </p>
+
+        <p v-if="evidenceWarning" class="stock-conclusion__warning">
+          <van-icon name="info-o" size="12" />
+          {{ evidenceWarning }}
+        </p>
+
         <div class="stock-conclusion__chips">
-          <span v-for="entry in categoryChips" :key="entry.key" class="chip" :class="`chip--${entry.key}`">
-            {{ entry.label }} {{ entry.count }}
+          <EvidenceBadge :evidence="score.evidence" counts />
+          <span class="chip chip--outline">
+            聚合置信度 {{ Math.round(score.confidence * 100) }}%
           </span>
-          <span class="chip chip--outline">聚合置信度 {{ Math.round(score.confidence * 100) }}%</span>
+        </div>
+
+        <div class="evidence-coverage">
+          <span
+            v-for="item in coverage"
+            :key="item.key"
+            class="evidence-coverage__item"
+            :class="item.covered ? 'is-covered' : 'is-missing'"
+          >
+            <van-icon :name="item.covered ? 'checked' : 'minus'" size="10" />
+            {{ item.label }}{{ item.covered ? '已覆盖' : '缺失' }}
+          </span>
+          <span class="evidence-coverage__authors">
+            {{ score.evidence.distinct_authors }} 位作者
+          </span>
         </div>
       </section>
 
       <div class="stock-controls">
         <div class="stock-controls__row">
           <button
+            v-for="option in scopes"
+            :key="option.value"
             type="button"
-            :class="{ active: scope === 'all' }"
-            @click="changeScope('all')"
+            :class="{ active: scope === option.value }"
+            @click="changeScope(option.value)"
           >
-            全部研报
-          </button>
-          <button
-            type="button"
-            :class="{ active: scope === 'followed' }"
-            @click="changeScope('followed')"
-          >
-            仅关注作者
+            {{ option.label }}
           </button>
         </div>
         <div class="stock-controls__row stock-controls__row--windows">
@@ -232,45 +340,84 @@ onMounted(async () => {
 
       <ScoreComposition
         v-if="score.report_count"
-        :categories="score.category_scores"
+        :relations="score.relation_scores"
         :total="score.total_points"
         :report-count="score.report_count"
+        :display-label="score.display_label"
       />
+
+      <section v-if="history" class="section">
+        <div class="section__head">
+          <h2 class="section__title">评分变化</h2>
+          <span class="section__hint">每日快照</span>
+        </div>
+        <div class="card history-card">
+          <div class="history-card__deltas">
+            <div
+              v-for="item in historyDeltas"
+              :key="item.key"
+              class="history-card__delta"
+            >
+              <span class="history-card__delta-label">{{ item.label }}</span>
+              <ScoreDelta :value="item.value" />
+            </div>
+          </div>
+          <ScoreSparkline :points="history.points" />
+        </div>
+      </section>
 
       <section v-if="sortedBreakdown.length" class="section">
         <div class="section__head">
-          <h2 class="section__title">信号拆解</h2>
+          <h2 class="section__title">证据拆解</h2>
           <span class="section__hint">按文章有效权重排序</span>
         </div>
         <div class="card breakdown">
-          <button
+          <div
             v-for="item in visibleBreakdown"
             :key="item.report_id"
-            type="button"
             class="breakdown__row"
-            @click="openReport(item.report_id)"
           >
-            <div class="breakdown__top">
-              <span class="chip" :class="`chip--${item.category}`">
-                {{ categoryLabel(item.category) }}
-              </span>
-              <span class="breakdown__title">{{ item.title }}</span>
-            </div>
-            <div class="breakdown__bar">
-              <span
-                class="breakdown__fill"
-                :class="`is-${item.category}`"
-                :style="{ width: `${weightPercent(item)}%` }"
-              />
-            </div>
-            <div class="breakdown__meta">
-              <span>文章权重 {{ item.effective_weight.toFixed(2) }}</span>
-              <span>作者权重 {{ item.author_weight.toFixed(1) }}</span>
-              <span>板块配额 {{ Math.round(item.category_weight * 100) }}%</span>
-              <span>时效 {{ Math.round(item.recency_factor * 100) }}%</span>
-              <span>相关度 {{ Math.round(item.relevance * 100) }}%</span>
-            </div>
-          </button>
+            <button
+              type="button"
+              class="breakdown__main"
+              @click="openReport(item.report_id)"
+            >
+              <div class="breakdown__top">
+                <span class="chip" :class="`chip--${item.relation}`">
+                  {{ relationLabel(item.relation) }}
+                </span>
+                <span class="breakdown__title">{{ item.title }}</span>
+              </div>
+              <p class="breakdown__reason">
+                {{ relationReasonLabel(item.relation_reason) }}
+                <span v-if="item.author_name" class="breakdown__author">
+                  · {{ item.author_name }}
+                </span>
+              </p>
+              <div class="breakdown__bar">
+                <span
+                  class="breakdown__fill"
+                  :class="`is-${item.relation}`"
+                  :style="{ width: `${weightPercent(item)}%` }"
+                />
+              </div>
+              <div class="breakdown__meta">
+                <span>文章权重 {{ item.effective_weight.toFixed(2) }}</span>
+                <span>作者权重 {{ item.author_weight.toFixed(1) }}</span>
+                <span>关系配额 {{ Math.round(item.relation_weight * 100) }}%</span>
+                <span>时效 {{ Math.round(item.recency_factor * 100) }}%</span>
+                <span>相关度 {{ Math.round(item.relevance * 100) }}%</span>
+              </div>
+            </button>
+            <button
+              type="button"
+              class="breakdown__feedback"
+              :disabled="feedbackSaving !== null"
+              @click="markIrrelevant(item)"
+            >
+              {{ feedbackSaving === item.report_id ? '处理中…' : '这篇与我无关' }}
+            </button>
+          </div>
 
           <button
             v-if="sortedBreakdown.length > 6"
@@ -283,9 +430,11 @@ onMounted(async () => {
           </button>
         </div>
         <p class="formula-note">
-          文章权重 = 置信度 × √作者权重 × 相关度 × 0.5^(距今天数 ÷ 半衰期)；
-          个股 / 行业 / 宏观半衰期分别为 7 / 14 / 30 天，仅纳入近 90 天文章。
-          板块内先按文章权重求加权信号，再折算为板块配额得分。
+          文章权重 = 置信度 × √作者权重 × 关系相关度 × 0.5^(距今天数 ÷ 半衰期)；
+          个股 / 行业 / 宏观半衰期分别为 {{ score.half_life_days.stock ?? 7 }} /
+          {{ score.half_life_days.industry ?? 14 }} /
+          {{ score.half_life_days.macro ?? 30 }} 天，仅纳入近
+          {{ Math.round(score.max_age_days) }} 天文章。同一篇文章对同一只股票只计一次。
         </p>
       </section>
 
@@ -303,13 +452,15 @@ onMounted(async () => {
         </div>
         <div v-else class="empty-state">
           <van-icon name="notes-o" size="28" />
-          <p class="empty-state__title">当前窗口没有相关研报</p>
-          <p class="empty-state__text">试试扩大时间窗口，或切换为「全部研报」。</p>
+          <p class="empty-state__title">当前范围没有相关研报</p>
+          <p class="empty-state__text">
+            试试切换「全站」或扩大时间窗口；也可以在作者页关注更多相关博主。
+          </p>
         </div>
       </section>
 
       <footer class="stock-footer">
-        <p>评分为统计聚合结果，不构成投资建议。</p>
+        <p>评分仅作研究参考，不构成投资建议。</p>
         <p class="stock-footer__meta">
           {{ detail.security.industry_code ? `行业代码 ${detail.security.industry_code} · ` : '' }}
           更新于 {{ score.computed_at ? new Date(score.computed_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—' }}
@@ -433,6 +584,15 @@ onMounted(async () => {
   font-size: 9px;
 }
 
+.stock-hero__delta {
+  margin: 9px 0 0;
+}
+
+.stock-hero__delta :deep(.score-delta__since),
+.stock-hero__delta :deep(.score-delta__prefix) {
+  color: rgba(255, 255, 255, 0.48);
+}
+
 .stock-hero :deep(.score-ring__caption) {
   color: rgba(255, 255, 255, 0.5);
 }
@@ -475,18 +635,60 @@ onMounted(async () => {
   color: var(--rs-ink-soft);
 }
 
-.stock-conclusion__text.up,
-.stock-conclusion__text.down {
-  color: var(--rs-ink-soft);
+.stock-conclusion__warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 11px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff7e6;
+  color: #8a5a00;
+  font-size: 10.5px;
+  line-height: 1.6;
 }
 
 .stock-conclusion__chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-top: 13px;
   padding-top: 13px;
   border-top: 1px dashed var(--rs-line);
+}
+
+.evidence-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 9.5px;
+  color: var(--rs-muted);
+}
+
+.evidence-coverage__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--rs-neutral-soft);
+}
+
+.evidence-coverage__item.is-covered {
+  background: var(--rs-down-soft);
+  color: var(--rs-down);
+}
+
+.evidence-coverage__item.is-missing {
+  color: var(--rs-muted);
+  opacity: 0.75;
+}
+
+.evidence-coverage__authors {
+  margin-left: auto;
 }
 
 .stock-controls {
@@ -531,25 +733,57 @@ onMounted(async () => {
   color: var(--rs-accent);
 }
 
+.history-card {
+  padding: 14px 16px;
+}
+
+.history-card__deltas {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 13px;
+}
+
+.history-card__delta {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.history-card__delta-label {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 9.5px;
+  color: var(--rs-muted);
+}
+
 .breakdown {
   overflow: hidden;
 }
 
 .breakdown__row {
-  display: block;
-  width: 100%;
-  padding: 13px 15px;
-  border: none;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding-right: 10px;
 }
 
 .breakdown__row + .breakdown__row {
   border-top: 1px solid var(--rs-line);
 }
 
-.breakdown__row:active {
+.breakdown__main {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  padding: 13px 8px 13px 15px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.breakdown__main:active {
   background: #fafcff;
 }
 
@@ -567,6 +801,16 @@ onMounted(async () => {
   white-space: nowrap;
   font-size: 12.5px;
   font-weight: 600;
+  color: var(--rs-ink-soft);
+}
+
+.breakdown__reason {
+  margin: 5px 0 0;
+  font-size: 9.5px;
+  color: var(--rs-muted);
+}
+
+.breakdown__author {
   color: var(--rs-ink-soft);
 }
 
@@ -603,6 +847,22 @@ onMounted(async () => {
   margin-top: 7px;
   font-size: 9.5px;
   color: var(--rs-muted);
+}
+
+.breakdown__feedback {
+  align-self: center;
+  flex: none;
+  padding: 5px 8px;
+  border: 1px solid var(--rs-line);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 9.5px;
+  color: var(--rs-muted);
+  cursor: pointer;
+}
+
+.breakdown__feedback:disabled {
+  opacity: 0.5;
 }
 
 .breakdown__more {

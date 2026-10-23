@@ -33,6 +33,12 @@ const router = createRouter({
       meta: { tabbar: false },
     },
     {
+      path: '/digest',
+      name: 'digest',
+      component: () => import('@/pages/DigestPage.vue'),
+      meta: { tabbar: false },
+    },
+    {
       path: '/authors',
       name: 'authors',
       component: () => import('@/pages/AuthorsPage.vue'),

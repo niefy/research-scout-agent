@@ -87,11 +87,17 @@ async def update_profile(
     *,
     nickname: str | None = None,
     scoring_config: dict | None = None,
+    digest_email_enabled: bool | None = None,
 ) -> User:
     if nickname is not None:
         user.nickname = nickname.strip()
     if scoring_config is not None:
-        user.scoring_config = scoring_config
+        # Merge so the settings page can update one key without wiping weights.
+        merged = dict(user.scoring_config or {})
+        merged.update(scoring_config)
+        user.scoring_config = merged
+    if digest_email_enabled is not None:
+        user.digest_email_enabled = digest_email_enabled
     await session.commit()
     await session.refresh(user)
     return user

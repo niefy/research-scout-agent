@@ -6,6 +6,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Float,
+    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -47,6 +48,17 @@ class Security(Base, TimestampMixin):
 
 class StockScoreSnapshot(Base):
     __tablename__ = "stock_score_snapshots"
+    __table_args__ = (
+        Index(
+            "ix_snapshot_user_security_scope_time",
+            "user_id",
+            "security_id",
+            "scope",
+            "window",
+            "computed_at",
+        ),
+        Index("ix_snapshot_security_time", "security_id", "computed_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     security_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
@@ -56,11 +68,17 @@ class StockScoreSnapshot(Base):
     report_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     raw_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     final_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    total_points: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     qualitative_score: Mapped[float | None] = mapped_column(Float)
     adjustment: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     n_eff: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     conclusion: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    relation_counts: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    evidence_level: Mapped[str] = mapped_column(
+        String(16), default="none", nullable=False
+    )
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     breakdown: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     computed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

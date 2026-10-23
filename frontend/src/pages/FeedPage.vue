@@ -2,12 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
+import DailyDigestCard from '@/components/DailyDigestCard.vue'
 import ReportCard from '@/components/ReportCard.vue'
 import type { FeedSort, FeedWindow } from '@/api/types'
+import { useDigestStore } from '@/stores/digest'
 import { useFeedStore } from '@/stores/feed'
 
 const router = useRouter()
 const feed = useFeedStore()
+const digest = useDigestStore()
 
 const refreshing = ref(false)
 const sentinel = ref<HTMLElement | null>(null)
@@ -53,8 +56,12 @@ const emptyText = computed(() =>
 )
 
 async function onRefresh(): Promise<void> {
-  await feed.refresh()
+  await Promise.all([feed.refresh(), digest.load()])
   refreshing.value = false
+}
+
+function openDigest(): void {
+  void router.push('/digest')
 }
 
 function nearBottom(): boolean {
@@ -82,6 +89,7 @@ watch(
 
 onMounted(() => {
   if (feed.items.length === 0) void feed.load(true)
+  if (!digest.digest) void digest.load()
   window.addEventListener('scroll', onScroll, { passive: true })
   void nextTick(maybeLoadMore)
 })
@@ -150,6 +158,11 @@ onBeforeUnmount(() => {
 
     <van-pull-refresh v-model="refreshing" @refresh="onRefresh">
       <div class="feed-list">
+        <DailyDigestCard
+          :digest="digest.digest"
+          :loading="digest.loading"
+          @open="openDigest"
+        />
         <ReportCard v-for="item in feed.items" :key="item.id" :report="item" />
 
         <div v-if="feed.loading" class="loading-block">

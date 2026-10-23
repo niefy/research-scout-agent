@@ -20,23 +20,25 @@ TOTAL_POINTS = 100.0
 class ScoreInput:
     report_id: int
     title: str
-    category: str
+    relation: str
     score: float
     confidence: float
     author_weight: float
     published_at: datetime
     relevance: float = 1.0
+    reason: str = ""
 
 
 @dataclass
 class BreakdownEntry:
     report_id: int
     title: str
-    category: str
+    relation: str
+    reason: str
     score: float
     confidence: float
     author_weight: float
-    category_weight: float
+    relation_weight: float
     recency_factor: float
     relevance: float
     effective_weight: float
@@ -44,15 +46,15 @@ class BreakdownEntry:
 
 
 @dataclass
-class CategoryScore:
-    """Score contribution of one category (stock / industry / macro).
+class RelationScore:
+    """Score contribution of one stock-report relation (stock / industry / macro).
 
-    ``budget_share`` is the effective share after redistributing categories
+    ``budget_share`` is the effective share after redistributing relations
     that have no usable reports. ``points`` is always within
     ``[0, budget_points]``; a neutral weighted signal earns half the budget.
     """
 
-    category: str
+    relation: str
     budget_share: float
     budget_points: float
     article_count: int
@@ -71,8 +73,8 @@ class AggregateResult:
     confidence: float
     adjustment: float = 0.0
     breakdown: list[BreakdownEntry] = field(default_factory=list)
-    category_counts: dict[str, int] = field(default_factory=dict)
-    category_scores: list[CategoryScore] = field(default_factory=list)
+    relation_counts: dict[str, int] = field(default_factory=dict)
+    relation_scores: list[RelationScore] = field(default_factory=list)
 
     @property
     def report_count(self) -> int:
@@ -95,13 +97,13 @@ def recency_factor(published_at: datetime, now: datetime, half_life_days: float)
     return 0.5 ** (age_days(published_at, now) / half_life_days)
 
 
-def _normalized_budgets(category_weights: dict[str, float] | None) -> dict[str, float]:
+def _normalized_budgets(relation_weights: dict[str, float] | None) -> dict[str, float]:
     weights: dict[str, float] = {}
-    for category in ALL_CATEGORIES:
-        raw = CATEGORY_BUDGET_WEIGHTS[category]
-        if category_weights and category in category_weights:
-            raw = category_weights[category]
-        weights[category] = max(0.0, float(raw))
+    for relation in ALL_CATEGORIES:
+        raw = CATEGORY_BUDGET_WEIGHTS[relation]
+        if relation_weights and relation in relation_weights:
+            raw = relation_weights[relation]
+        weights[relation] = max(0.0, float(raw))
     if sum(weights.values()) <= 0:
         return dict(CATEGORY_BUDGET_WEIGHTS)
     return weights
@@ -112,7 +114,7 @@ def aggregate_scores(
     *,
     now: datetime | None = None,
     shrink_k: float = AGGREGATION_SHRINK_K,
-    category_weights: dict[str, float] | None = None,
+    relation_weights: dict[str, float] | None = None,
     half_life_days: dict[str, float] | None = None,
     max_age_days: float = MAX_REPORT_AGE_DAYS,
 ) -> AggregateResult:
@@ -122,31 +124,31 @@ def aggregate_scores(
     1. Drop reports older than ``max_age_days`` (90 days by default).
     2. Give every report a time-decayed weight:
        ``w = confidence × sqrt(author_weight) × relevance × 0.5^(age / half_life)``.
-       Stock / industry / macro use 7 / 14 / 30 day half-lives, so newer
-       reports dominate within each category.
-    3. Within each category, compute the weighted signal
-       ``s_c = Σ(w_i × score_i) / Σw_i`` in ``[-1, 1]``.
-    4. Allocate 40 / 40 / 20 points across categories. Categories with no
+       Stock / industry / macro relations use 7 / 14 / 30 day half-lives, so
+       newer reports dominate within each relation.
+    3. Within each relation, compute the weighted signal
+       ``s_r = Σ(w_i × score_i) / Σw_i`` in ``[-1, 1]``.
+    4. Allocate 40 / 40 / 20 points across relations. Relations with no
        usable reports are removed and their budget is redistributed
        proportionally over the remaining ones.
-    5. Convert each category signal to points:
-       ``points_c = (s_c + 1) / 2 × budget_c``. A neutral signal earns half
-       the budget; the three categories always sum to at most 100.
+    5. Convert each relation signal to points:
+       ``points_r = (s_r + 1) / 2 × budget_r``. A neutral signal earns half
+       the budget; the three relations always sum to at most 100.
     """
     now = now or datetime.now(UTC)
-    budgets = _normalized_budgets(category_weights)
+    budgets = _normalized_budgets(relation_weights)
     half_lives = {**DEFAULT_HALF_LIFE_DAYS, **(half_life_days or {})}
 
     all_rows: list[tuple[float, float, BreakdownEntry]] = []
     grouped: dict[str, list[tuple[float, float, BreakdownEntry]]] = {
-        category: [] for category in ALL_CATEGORIES
+        relation: [] for relation in ALL_CATEGORIES
     }
-    category_counts: dict[str, int] = {}
+    relation_counts: dict[str, int] = {}
 
     for item in items:
         if item.score is None or item.confidence is None:
             continue
-        category = item.category if item.category in ALL_CATEGORIES else "macro"
+        relation = item.relation if item.relation in ALL_CATEGORIES else "macro"
         item_age = age_days(item.published_at, now)
         if max_age_days is not None and item_age > max_age_days:
             continue
@@ -155,7 +157,7 @@ def aggregate_scores(
         confidence = clamp(float(item.confidence), 0.0, 1.0)
         author_weight = max(0.0, float(item.author_weight or 0.0))
         relevance = max(0.0, min(1.0, float(item.relevance)))
-        decay = recency_factor(item.published_at, now, half_lives.get(category, 14.0))
+        decay = recency_factor(item.published_at, now, half_lives.get(relation, 14.0))
         effective = confidence * math.sqrt(author_weight) * relevance * decay
         if effective <= 0:
             continue
@@ -163,11 +165,12 @@ def aggregate_scores(
         entry = BreakdownEntry(
             report_id=item.report_id,
             title=item.title,
-            category=category,
+            relation=relation,
+            reason=item.reason,
             score=round(score, 4),
             confidence=round(confidence, 4),
             author_weight=round(author_weight, 4),
-            category_weight=0.0,
+            relation_weight=0.0,
             recency_factor=round(decay, 4),
             relevance=round(relevance, 4),
             effective_weight=round(effective, 4),
@@ -175,8 +178,8 @@ def aggregate_scores(
         )
         row = (effective, effective * score, entry)
         all_rows.append(row)
-        grouped[category].append(row)
-        category_counts[category] = category_counts.get(category, 0) + 1
+        grouped[relation].append(row)
+        relation_counts[relation] = relation_counts.get(relation, 0) + 1
 
     total_weight = sum(row[0] for row in all_rows)
     if total_weight <= 0:
@@ -186,35 +189,35 @@ def aggregate_scores(
             total_points=0.0,
             n_eff=0.0,
             confidence=0.0,
-            category_counts=category_counts,
+            relation_counts=relation_counts,
         )
 
-    present = [category for category in ALL_CATEGORIES if grouped[category]]
-    budget_total = sum(budgets[category] for category in present)
+    present = [relation for relation in ALL_CATEGORIES if grouped[relation]]
+    budget_total = sum(budgets[relation] for relation in present)
     if budget_total <= 0:
         present = list(ALL_CATEGORIES)
         budget_total = sum(CATEGORY_BUDGET_WEIGHTS.values())
 
-    category_scores: list[CategoryScore] = []
+    relation_scores: list[RelationScore] = []
     total_points = 0.0
-    for category in present:
-        rows = grouped[category]
+    for relation in present:
+        rows = grouped[relation]
         if not rows:
             continue
         weight_sum = sum(row[0] for row in rows)
         signal = sum(row[1] for row in rows) / weight_sum
-        share = budgets[category] / budget_total
+        share = budgets[relation] / budget_total
         budget_points = TOTAL_POINTS * share
         points = (signal + 1.0) / 2.0 * budget_points
         avg_confidence = sum(row[2].confidence * row[0] for row in rows) / weight_sum
         total_points += points
 
         for _, _, entry in rows:
-            entry.category_weight = round(share, 4)
+            entry.relation_weight = round(share, 4)
 
-        category_scores.append(
-            CategoryScore(
-                category=category,
+        relation_scores.append(
+            RelationScore(
+                relation=relation,
                 budget_share=round(share, 4),
                 budget_points=round(budget_points, 2),
                 article_count=len(rows),
@@ -248,6 +251,6 @@ def aggregate_scores(
             key=lambda entry: entry.published_at,
             reverse=True,
         ),
-        category_counts=category_counts,
-        category_scores=category_scores,
+        relation_counts=relation_counts,
+        relation_scores=relation_scores,
     )

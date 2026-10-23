@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import hash_password
-from app.models.author import AuthorIdentity
+from app.models.author import Author, AuthorIdentity
 from app.models.channel import Channel
 from app.models.personalization import AuthorFollow, WatchlistItem
 from app.models.security import Industry, Security
@@ -38,6 +38,18 @@ CHANNELS = [
         "adapter_key": "mock",
         "enabled": True,
         "config": {},
+    },
+    {
+        "code": "xueqiu",
+        "name": "雪球",
+        "adapter_key": "xueqiu",
+        "enabled": True,
+        "config": {
+            "secret_ref": "XUEQIU_COOKIE",
+            "author_only": True,
+            "count": 20,
+        },
+        "secret_ref": "XUEQIU_COOKIE",
     },
 ]
 
@@ -205,7 +217,7 @@ async def seed_demo(session: AsyncSession) -> dict:
             )
         )
     ).all()
-    for author_id in set(author_ids):
+    for rank, author_id in enumerate(sorted(set(author_ids)), start=1):
         follow = await session.scalar(
             select(AuthorFollow).where(
                 AuthorFollow.user_id == demo.id,
@@ -214,6 +226,11 @@ async def seed_demo(session: AsyncSession) -> dict:
         )
         if follow is None:
             session.add(AuthorFollow(user_id=demo.id, author_id=author_id, weight=1.0))
+        author = await session.get(Author, author_id)
+        if author is not None:
+            author.is_curated = True
+            author.curated_rank = rank
+            author.quality_score = 0.8
     await session.commit()
 
     for code in ("600519.SH", "300750.SZ", "688981.SH"):

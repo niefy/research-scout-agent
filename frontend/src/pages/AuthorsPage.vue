@@ -3,12 +3,23 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { showConfirmDialog, showToast } from 'vant'
 
 import { api } from '@/api/client'
-import type { Author, AuthorDetail, FollowedAuthor, Page } from '@/api/types'
+import type {
+  Author,
+  AuthorDetail,
+  AuthorImportResult,
+  FollowedAuthor,
+  Page,
+  RecommendedAuthor,
+} from '@/api/types'
 
-const tab = ref<'following' | 'all'>('following')
+type AuthorTab = 'following' | 'curated' | 'all'
+type FollowTarget = { id: number; canonical_name: string; default_weight?: number }
+
+const tab = ref<AuthorTab>('following')
 const q = ref('')
 const loading = ref(false)
 const following = ref<FollowedAuthor[]>([])
+const recommended = ref<RecommendedAuthor[]>([])
 const allAuthors = ref<Author[]>([])
 const allTotal = ref(0)
 const page = ref(1)
@@ -55,6 +66,12 @@ async function loadFollowing(): Promise<void> {
   following.value = await api.get<FollowedAuthor[]>('/authors/following')
 }
 
+async function loadCurated(): Promise<void> {
+  recommended.value = await api.get<RecommendedAuthor[]>('/authors/recommended', {
+    limit: 30,
+  })
+}
+
 async function loadAll(reset = false): Promise<void> {
   if (reset) {
     page.value = 1
@@ -73,6 +90,7 @@ async function refreshCurrent(): Promise<void> {
   loading.value = true
   try {
     if (tab.value === 'following') await loadFollowing()
+    else if (tab.value === 'curated') await loadCurated()
     else await loadAll(true)
   } catch (error) {
     showToast(error instanceof Error ? error.message : '加载失败')
@@ -81,7 +99,7 @@ async function refreshCurrent(): Promise<void> {
   }
 }
 
-function switchTab(next: 'following' | 'all'): void {
+function switchTab(next: AuthorTab): void {
   if (tab.value === next) return
   tab.value = next
   q.value = ''
@@ -98,7 +116,7 @@ async function loadMore(): Promise<void> {
   }
 }
 
-async function toggleFollow(author: Author): Promise<void> {
+async function toggleFollow(author: FollowTarget): Promise<void> {
   const existing = followMap.value[author.id]
   try {
     if (existing) {
@@ -112,13 +130,16 @@ async function toggleFollow(author: Author): Promise<void> {
       showToast('已取消关注')
     } else {
       await api.post(`/authors/${author.id}/follow`, {
-        weight: author.default_weight,
+        weight: author.default_weight ?? 1,
         notify: false,
       })
-      showToast('已关注')
+      showToast('已关注，近期内容会自动回填')
     }
-    await loadFollowing()
-    if (tab.value === 'all') await loadAll(true)
+    await Promise.all([
+      loadFollowing(),
+      loadCurated(),
+      tab.value === 'all' ? loadAll(true) : Promise.resolve(),
+    ])
   } catch (error) {
     if (error === 'cancel' || (error instanceof Error && error.message.includes('cancel'))) return
     showToast(error instanceof Error ? error.message : '操作失败')
@@ -192,11 +213,56 @@ async function createAuthor(): Promise<void> {
     })
     createPopup.value = false
     showToast('作者已创建并关注')
-    await Promise.all([loadFollowing(), loadAll(true)])
+    await Promise.all([loadFollowing(), loadAll(true), loadCurated()])
   } catch (error) {
     showToast(error instanceof Error ? error.message : '创建失败')
   } finally {
     creating.value = false
+  }
+}
+
+/* ---------- xueqiu import popup ---------- */
+
+const importPopup = ref(false)
+const importing = ref(false)
+const importForm = reactive({
+  target: '',
+  display_name: '',
+})
+
+function openImport(): void {
+  importForm.target = ''
+  importForm.display_name = ''
+  importPopup.value = true
+}
+
+async function importAuthor(): Promise<void> {
+  const target = importForm.target.trim()
+  if (!target) {
+    showToast('请填写雪球主页链接或用户 ID')
+    return
+  }
+  importing.value = true
+  try {
+    const result = await api.post<AuthorImportResult>('/authors/import', {
+      profile_url: target,
+      display_name: importForm.display_name.trim() || undefined,
+      follow: true,
+      weight: 1,
+    })
+    importPopup.value = false
+    showToast(
+      result.backfill_scheduled
+        ? '已导入并关注，正在回填近期内容'
+        : result.created
+          ? '已导入作者并关注'
+          : '已复用已有作者并关注',
+    )
+    await Promise.all([loadFollowing(), loadCurated(), loadAll(true)])
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '导入失败')
+  } finally {
+    importing.value = false
   }
 }
 
@@ -211,7 +277,7 @@ watch(q, () => {
 onMounted(async () => {
   loading.value = true
   try {
-    await Promise.all([loadFollowing(), loadAll(true)])
+    await Promise.all([loadFollowing(), loadAll(true), loadCurated()])
   } catch (error) {
     showToast(error instanceof Error ? error.message : '加载失败')
   } finally {
@@ -229,13 +295,19 @@ onBeforeUnmount(() => {
     <header class="hero authors-hero">
       <div class="authors-hero__top">
         <span class="hero__eyebrow">AUTHOR GRAPH</span>
-        <button type="button" class="authors-hero__add" @click="openCreate">
-          <van-icon name="plus" size="12" />
-          添加作者
-        </button>
+        <div class="authors-hero__actions">
+          <button type="button" class="authors-hero__add" @click="openImport">
+            <van-icon name="link-o" size="12" />
+            导入雪球
+          </button>
+          <button type="button" class="authors-hero__add" @click="openCreate">
+            <van-icon name="plus" size="12" />
+            添加作者
+          </button>
+        </div>
       </div>
       <h1 class="hero__title">作者</h1>
-      <p class="hero__subtitle">你信任谁，决定你看到什么</p>
+      <p class="hero__subtitle">只抓你关注的与系统精选的作者，把噪声挡在门外</p>
     </header>
 
     <div class="authors-toolbar">
@@ -263,10 +335,18 @@ onBeforeUnmount(() => {
         </button>
         <button
           type="button"
+          :class="{ active: tab === 'curated' }"
+          @click="switchTab('curated')"
+        >
+          系统精选
+          <span class="authors-tabs__count">{{ recommended.length }}</span>
+        </button>
+        <button
+          type="button"
           :class="{ active: tab === 'all' }"
           @click="switchTab('all')"
         >
-          发现作者
+          全部作者
         </button>
       </div>
     </div>
@@ -311,6 +391,7 @@ onBeforeUnmount(() => {
           <div class="author-card__body">
             <div class="author-card__name-row">
               <h3>{{ item.author.canonical_name }}</h3>
+              <span v-if="item.author.is_curated" class="chip chip--accent">精选</span>
               <span class="chip chip--outline">
                 {{ typeLabels[item.author.author_type] ?? item.author.author_type }}
               </span>
@@ -327,6 +408,62 @@ onBeforeUnmount(() => {
             </button>
             <button type="button" class="text-button" @click="toggleFollow(item.author)">
               取消关注
+            </button>
+          </div>
+        </article>
+      </template>
+
+      <template v-else-if="tab === 'curated'">
+        <div v-if="!recommended.length && !loading" class="empty-state">
+          <van-icon name="award-o" size="32" />
+          <p class="empty-state__title">暂时没有新的精选作者</p>
+          <p class="empty-state__text">
+            你已关注当前全部系统精选作者，也可以从「全部作者」中自行发现或导入雪球博主。
+          </p>
+          <van-button
+            size="small"
+            round
+            type="primary"
+            class="empty-action"
+            @click="switchTab('all')"
+          >
+            浏览全部作者
+          </van-button>
+        </div>
+
+        <article
+          v-for="author in recommended"
+          :key="author.id"
+          class="card author-card"
+        >
+          <div
+            class="author-card__avatar"
+            :style="{ background: avatarColor(author.canonical_name) }"
+          >
+            {{ initial(author.canonical_name) }}
+          </div>
+          <div class="author-card__body">
+            <div class="author-card__name-row">
+              <h3>{{ author.canonical_name }}</h3>
+              <span class="chip chip--accent">系统精选</span>
+            </div>
+            <p class="author-card__meta">
+              质量 {{ Math.round(author.quality_score * 100) }}%
+              <span class="author-card__dot">·</span>
+              {{ author.follower_count }} 人关注
+              <span v-if="author.sector_tags.length" class="author-card__dot">·</span>
+              <span v-if="author.sector_tags.length">
+                {{ author.sector_tags.join(' / ') }}
+              </span>
+            </p>
+          </div>
+          <div class="author-card__actions">
+            <button
+              type="button"
+              class="follow-button"
+              @click="toggleFollow(author)"
+            >
+              + 关注
             </button>
           </div>
         </article>
@@ -356,6 +493,7 @@ onBeforeUnmount(() => {
           <div class="author-card__body">
             <div class="author-card__name-row">
               <h3>{{ author.canonical_name }}</h3>
+              <span v-if="author.is_curated" class="chip chip--accent">精选</span>
               <span class="chip chip--outline">
                 {{ typeLabels[author.author_type] ?? author.author_type }}
               </span>
@@ -449,6 +587,54 @@ onBeforeUnmount(() => {
       </div>
     </van-popup>
 
+    <!-- xueqiu import popup -->
+    <van-popup v-model:show="importPopup" position="bottom" round closeable>
+      <div class="sheet">
+        <h3 class="sheet__title">导入雪球作者</h3>
+        <p class="sheet__subtitle">
+          粘贴雪球主页链接或数字用户 ID。系统只抓取该博主的时间线，不做雪球全站抓取；
+          导入后自动关注并回填近期内容。
+        </p>
+
+        <label class="sheet-label">
+          雪球主页链接 / 用户 ID
+          <input
+            v-model="importForm.target"
+            type="text"
+            maxlength="1024"
+            placeholder="https://xueqiu.com/u/1234567890 或 1234567890"
+            class="sheet-input"
+          />
+        </label>
+
+        <label class="sheet-label">
+          作者名称（可选）
+          <input
+            v-model="importForm.display_name"
+            type="text"
+            maxlength="128"
+            placeholder="不填则使用「雪球用户{ID}」，可稍后修改"
+            class="sheet-input"
+          />
+        </label>
+
+        <p class="sheet-note">
+          需要服务端配置 XUEQIU_COOKIE；未配置时抓取会标记为“凭据缺失”，不会影响手动添加的作者。
+        </p>
+
+        <van-button
+          block
+          round
+          type="primary"
+          :loading="importing"
+          class="sheet__submit"
+          @click="importAuthor"
+        >
+          导入并关注
+        </van-button>
+      </div>
+    </van-popup>
+
     <!-- create author popup -->
     <van-popup v-model:show="createPopup" position="bottom" round closeable>
       <div class="sheet">
@@ -521,6 +707,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.authors-hero__actions {
+  display: flex;
+  gap: 6px;
 }
 
 .authors-hero__add {
@@ -825,6 +1016,13 @@ onBeforeUnmount(() => {
 .sheet-input:focus {
   border-color: var(--rs-accent);
   background: #fff;
+}
+
+.sheet-note {
+  margin: 14px 0 0;
+  font-size: 10.5px;
+  line-height: 1.7;
+  color: var(--rs-muted);
 }
 
 .type-options {

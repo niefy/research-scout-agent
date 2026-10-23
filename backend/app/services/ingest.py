@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.collectors.base import RawItem, make_http_client
 from app.collectors.registry import get_adapter
 from app.core.config import settings
+from app.models.author import Author, AuthorIdentity
 from app.models.channel import Channel
 from app.models.job import IngestRun
 from app.models.report import Report, ReportCluster
@@ -27,6 +29,13 @@ SIMHASH_REPRINT_THRESHOLD = 3
 SIMHASH_LOOKBACK_DAYS = 14
 
 
+@dataclass
+class IngestResult:
+    outcome: str
+    report_id: int | None = None
+    author_conflict: bool = False
+
+
 async def crawl_channels(
     session: AsyncSession,
     *,
@@ -40,6 +49,20 @@ async def crawl_channels(
 
     results: list[dict] = []
     for channel in channels:
+        adapter = get_adapter(channel.adapter_key)
+        if not adapter.supports_channel_feed:
+            results.append(
+                {
+                    "channel_code": channel.code,
+                    "fetched": 0,
+                    "created": 0,
+                    "duplicated": 0,
+                    "failed": 0,
+                    "error": None,
+                    "skipped": True,
+                }
+            )
+            continue
         results.append(await ingest_channel(session, channel, limit=limit))
     return results
 
@@ -50,6 +73,18 @@ async def ingest_channel(
     *,
     limit: int | None = None,
 ) -> dict:
+    adapter = get_adapter(channel.adapter_key)
+    if not adapter.supports_channel_feed:
+        return {
+            "channel_code": channel.code,
+            "fetched": 0,
+            "created": 0,
+            "duplicated": 0,
+            "failed": 0,
+            "error": None,
+            "skipped": True,
+        }
+
     run = IngestRun(run_type="crawl", channel_id=channel.id, status="running", stats={})
     session.add(run)
     await session.commit()
@@ -57,7 +92,6 @@ async def ingest_channel(
     stats = {"fetched": 0, "created": 0, "duplicated": 0, "failed": 0}
     error: str | None = None
     try:
-        adapter = get_adapter(channel.adapter_key)
         item_limit = limit or settings.crawl_max_items_per_channel
         async with make_http_client() as client:
             raw_items = await adapter.fetch(client, channel.config or {}, item_limit)
@@ -65,8 +99,8 @@ async def ingest_channel(
 
         for raw in raw_items:
             try:
-                outcome = await ingest_item(session, channel, raw, adapter.key)
-                stats[outcome] += 1
+                result = await ingest_item(session, channel, raw, adapter.key)
+                stats[result.outcome] += 1
             except Exception as exc:  # noqa: BLE001 - one bad item must not stop the batch
                 stats["failed"] += 1
                 logger.warning(
@@ -110,7 +144,9 @@ async def ingest_item(
     channel: Channel,
     raw: RawItem,
     adapter_key: str,
-) -> str:
+    *,
+    target_author: Author | None = None,
+) -> IngestResult:
     external_id = raw.external_id or make_external_id(raw.url, raw.title)
     existing = await session.scalar(
         select(Report).where(
@@ -119,7 +155,7 @@ async def ingest_item(
         )
     )
     if existing is not None:
-        return "duplicated"
+        return IngestResult("duplicated", report_id=existing.id)
 
     title = clean_text(raw.title)
     content = clean_text(raw.content)
@@ -133,18 +169,24 @@ async def ingest_item(
         )
     )
     if same_channel is not None:
-        return "duplicated"
+        return IngestResult("duplicated", report_id=same_channel.id)
 
     reprint_of = await _find_reprint(session, digest, fingerprint, channel.id)
     published_at = raw.normalized_published_at()
 
-    author = await resolve_author(
-        session,
-        channel_id=channel.id,
-        raw_name=raw.author_name,
-        external_id=raw.author_external_id,
-        profile_url=raw.author_profile_url,
-    )
+    author_conflict = False
+    if target_author is not None:
+        author, author_conflict = await _resolve_target_author(
+            session, channel, raw, target_author
+        )
+    else:
+        author = await resolve_author(
+            session,
+            channel_id=channel.id,
+            raw_name=raw.author_name,
+            external_id=raw.author_external_id,
+            profile_url=raw.author_profile_url,
+        )
 
     report = Report(
         channel_id=channel.id,
@@ -168,7 +210,63 @@ async def ingest_item(
         await _attach_to_cluster(session, reprint_of, report)
 
     await session.commit()
-    return "created"
+    return IngestResult(
+        "created", report_id=report.id, author_conflict=author_conflict
+    )
+
+
+async def _resolve_target_author(
+    session: AsyncSession,
+    channel: Channel,
+    raw: RawItem,
+    target: Author,
+) -> tuple[Author, bool]:
+    """Resolve an author for a targeted crawl without fuzzy matching.
+
+    The identity binding is authoritative. If it already points at a different
+    author we keep the existing binding and report a conflict instead of
+    silently rebinding or merging authors.
+    """
+    external_id = (raw.author_external_id or "").strip()
+    if not external_id:
+        return target, False
+
+    identity = await session.scalar(
+        select(AuthorIdentity).where(
+            AuthorIdentity.channel_id == channel.id,
+            AuthorIdentity.external_id == external_id,
+        )
+    )
+    if identity is None:
+        session.add(
+            AuthorIdentity(
+                author_id=target.id,
+                channel_id=channel.id,
+                external_id=external_id,
+                display_name=raw.author_name or target.canonical_name,
+                profile_url=raw.author_profile_url,
+            )
+        )
+        return target, False
+
+    if identity.author_id == target.id:
+        if raw.author_name:
+            identity.display_name = raw.author_name
+        if raw.author_profile_url:
+            identity.profile_url = raw.author_profile_url
+        return target, False
+
+    existing = await session.get(Author, identity.author_id)
+    if existing is None:
+        return target, False
+    logger.warning(
+        "author identity conflict channel=%s external_id=%s target=%s existing=%s",
+        channel.code,
+        external_id,
+        target.id,
+        existing.id,
+    )
+    return existing, True
 
 
 async def _find_reprint(

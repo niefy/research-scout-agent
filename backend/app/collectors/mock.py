@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from app.collectors.base import ChannelAdapter, RawItem
+from app.collectors.base import AuthorTarget, ChannelAdapter, RawItem
 
 _MOCK_ITEMS = [
     {
@@ -95,10 +95,30 @@ _MOCK_ITEMS = [
 ]
 
 
+def _mock_items(entries: list[dict[str, Any]], limit: int) -> list[RawItem]:
+    now = datetime.now(UTC)
+    return [
+        RawItem(
+            external_id=entry["external_id"],
+            url=entry["url"],
+            title=entry["title"],
+            content=entry["content"],
+            published_at=now - timedelta(hours=entry["hours_ago"]),
+            author_name=entry["author"],
+            author_external_id=f"mock-author-{entry['author']}",
+            source_name=entry["source"],
+            engagement=entry["engagement"],
+            meta={"channel": "mock"},
+        )
+        for entry in entries[:limit]
+    ]
+
+
 class MockAdapter(ChannelAdapter):
     key = "mock"
     display_name = "示例数据源"
     default_config = {}
+    supports_author_feed = True
 
     async def fetch(
         self,
@@ -106,22 +126,21 @@ class MockAdapter(ChannelAdapter):
         config: dict[str, Any],
         limit: int,
     ) -> list[RawItem]:
-        now = datetime.now(UTC)
-        return [
-            RawItem(
-                external_id=entry["external_id"],
-                url=entry["url"],
-                title=entry["title"],
-                content=entry["content"],
-                published_at=now - timedelta(hours=entry["hours_ago"]),
-                author_name=entry["author"],
-                author_external_id=f"mock-author-{entry['author']}",
-                source_name=entry["source"],
-                engagement=entry["engagement"],
-                meta={"channel": "mock"},
-            )
-            for entry in _MOCK_ITEMS[:limit]
+        return _mock_items(_MOCK_ITEMS, limit)
+
+    async def fetch_author(
+        self,
+        client: httpx.AsyncClient,
+        config: dict[str, Any],
+        target: AuthorTarget,
+        limit: int,
+    ) -> list[RawItem]:
+        entries = [
+            entry
+            for entry in _MOCK_ITEMS
+            if f"mock-author-{entry['author']}" == target.external_id
         ]
+        return _mock_items(entries, limit)
 
 
 __all__ = ["MockAdapter"]

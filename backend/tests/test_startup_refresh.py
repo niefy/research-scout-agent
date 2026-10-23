@@ -6,14 +6,19 @@ from app.models.job import IngestRun
 from app.services import startup_refresh
 
 
-async def _add_crawl_run(db_session, *, finished_minutes_ago: float | None) -> None:
+async def _add_crawl_run(
+    db_session,
+    *,
+    finished_minutes_ago: float | None,
+    run_type: str = "crawl",
+) -> None:
     now = datetime.now(UTC)
     finished_at = (
         None if finished_minutes_ago is None else now - timedelta(minutes=finished_minutes_ago)
     )
     db_session.add(
         IngestRun(
-            run_type="crawl",
+            run_type=run_type,
             status="success" if finished_at else "running",
             started_at=now - timedelta(minutes=5),
             finished_at=finished_at,
@@ -25,6 +30,9 @@ async def _add_crawl_run(db_session, *, finished_minutes_ago: float | None) -> N
 
 async def test_refresh_skips_when_last_crawl_is_recent(db_session, monkeypatch):
     await _add_crawl_run(db_session, finished_minutes_ago=20)
+    await _add_crawl_run(
+        db_session, finished_minutes_ago=20, run_type="author_crawl"
+    )
 
     called = False
 
@@ -89,6 +97,7 @@ async def test_refresh_runs_when_no_crawl_has_completed(db_session, monkeypatch)
 
 async def test_refresh_does_not_run_while_another_crawl_is_active(db_session, monkeypatch):
     await _add_crawl_run(db_session, finished_minutes_ago=None)
+    monkeypatch.setattr(startup_refresh.settings, "author_crawl_enabled", False)
 
     called = False
 
@@ -101,5 +110,6 @@ async def test_refresh_does_not_run_while_another_crawl_is_active(db_session, mo
 
     result = await startup_refresh.refresh_if_stale()
 
-    assert result == {"skipped": True, "reason": "crawl_in_progress"}
+    assert result["skipped"] is True
+    assert result["reason"] == "crawl_in_progress"
     assert called is False

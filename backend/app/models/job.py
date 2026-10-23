@@ -15,6 +15,7 @@ class IngestRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     channel_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    author_id: Mapped[int | None] = mapped_column(Integer, index=True)
     status: Mapped[str] = mapped_column(String(16), default="running", nullable=False)
     started_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), server_default=func.now(), nullable=False

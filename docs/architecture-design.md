@@ -1,9 +1,14 @@
 # 财经研报 / 论坛帖子研究打分 Agent 系统 — 架构设计
 
-> 版本：v0.2  
-> 状态：Local MVP 已实现（腾讯新闻、雪球、Twitter/X 适配器与管理端 UI 待做）  
-> 日期：2026-10-17  
+> 版本：v0.3
+> 状态：P0 关系化评分与作者定向抓取已实现（腾讯新闻、Twitter/X 适配器与管理端 UI 待做）
+> 日期：2026-10-18
 > 技术栈：Python + FastAPI + LangChain / LangGraph + PostgreSQL + Redis + Vue 3 + Vant
+
+> **P0 重构说明（2026-10）**：本文档中早期“按文章主分类聚合”的表述已被关系化评分取代。
+> 每篇文章先判断与某只股票的关系（`stock > industry > macro`），再进入对应配额；
+> 作者定向抓取 = 系统精选 ∪ 用户关注，雪球只抓作者时间线；新增站内简报与每日邮件。
+> 产品定义、证据等级与范围规则见 [product-redesign.md](product-redesign.md)。
 
 ---
 
@@ -95,11 +100,15 @@
 | # | 决策 | 结论 |
 |---|---|---|
 | D-1 | 信息流范围 | **关注流 + 发现/热门流**。关注流按用户关注博主组织；发现流面向全站内容，提供“热门 / 最新”排序 |
-| D-2 | 个股聚合的报告范围 | 默认 `scope=all`，纳入全系统报告；用户可切换为 `scope=followed`，只看关注博主 |
+| D-2 | 个股聚合的报告范围 | 已被 D-5 取代：默认 `scope=hybrid`，可切换 `personal` / `all` |
 | D-3 | MVP 市场范围 | **先做 A 股**；证券主数据保留港股/美股扩展字段 |
 | D-4 | LLM 接入方式 | **OpenAI 标准协议**，通过 `base_url + api_key + model` 配置；前期默认模型 `deepseek-v4-flash` |
+| D-5 | 个股聚合的报告范围 | 默认 `scope=hybrid`（关注作者 + 系统精选）；可切换 `personal` / `all` |
+| D-6 | 文章与股票的关系 | 每只股票独立判断，优先级 `stock > industry > macro`，一篇文章对同一股票只计一次 |
+| D-7 | 仅宏观证据 | 保留分数，但标注“宏观参考”，结论文案不得写成个股综合结论 |
+| D-8 | P0 提醒 | 站内每日简报 + 每日邮件；微信 / PWA 推送放 P1 |
 
-> 这四条决策已同步到本文档的信息流、评分、API、前端、模型路由与路线图章节。
+> 这些决策已同步到本文档的信息流、评分、API、前端、模型路由与路线图章节。
 
 ---
 
@@ -126,7 +135,7 @@
 |---|---|---|---|
 | `authors.default_weight` | 全局 | 博主的基础可信度/影响力，管理员维护 | 1.0 |
 | `follows.weight` | 用户 | 当前用户对该博主的个人信任权重，覆盖全局值 | 1.0 |
-| `user_scoring_config.category_weights` | 用户 | 个股/行业/宏观三个板块在综合得分中的配额占比 | 0.4 / 0.4 / 0.2 |
+| `user_scoring_config.relation_weights` | 用户 | 个股/行业/宏观三个关系在综合得分中的配额占比 | 0.4 / 0.4 / 0.2 |
 
 信息流排序和个股聚合都使用**用户视角的有效博主权重**：
 
@@ -711,7 +720,7 @@ class ChannelAdapter(Protocol):
 | 新浪财经 | 列表 API / RSSHub | `media_name`、`author` | 低 | 列表项自带媒体名、关键词、摘要，适合快速接入 |
 | 华尔街见闻 | 热榜 API + 7x24 快讯 API | 需详情接口 | 低–中 | 热榜字段较薄，作者/正文需拉详情；快讯适合宏观事件 |
 | 腾讯新闻 | 财经频道/搜索 API，列表 API 兜底 | `source` | 中 | 列表自带发布者；通用热榜需金融相关性预过滤 |
-| 雪球 | 登录态 API / 自建 RSSHub | 用户身份 | 高 | 未登录接口实测返回 400；cookie 需加密存储并监控失效 |
+| 雪球 | 登录态作者时间线 API（P0 已实现） | 用户身份 | 高 | 只抓作者时间线；未配置 Cookie 或 401/403 时标记 `credentials_missing`，不返回空数据伪装成功 |
 | Twitter/X | 官方 API v2 | 账号 | 中–高 | 配额与费用；只按关键词/指定账号拉取 |
 | 研报源 | RSS / 开放接口 / PDF 下载 | 机构署名 | 高 | PDF 需文本抽取，扫描件需 OCR；注意版权 |
 | 通用 RSS | feedparser | 频道/作者 | 低 | 作为低成本扩展渠道 |
@@ -814,8 +823,8 @@ author_raw
 
 ### 5.6 参考项目调研：cn-news-digest
 
-> 调研对象：<https://github.com/FrankLPR/cn-news-digest>  
-> 调研日期：2026-10-17  
+> 调研对象：<https://github.com/FrankLPR/cn-news-digest>
+> 调研日期：2026-10-17
 > 结论：**仅参考其来源清单、适配器组织方式与降级思路；不复制代码、不作为依赖、不直接照搬其抓取路径。**
 
 #### 5.6.1 仓库概况
@@ -867,6 +876,35 @@ author_raw
 | P1 | 雪球 | 作者关注的核心来源，但登录态/反爬维护成本最高 |
 | P2 | Twitter/X | 官方 API，配额与费用；按账号/关键词抓取 |
 | P2 | 研报源 / PDF | 价值高，但解析与版权复杂度高 |
+
+---
+
+### 5.7 作者定向抓取（P0）
+
+抓取目标 = `Author.is_curated = true` ∪ 任一用户 `AuthorFollow` 的作者，过滤 `status=active`、`crawl_enabled=true`，按作者去重。
+
+```text
+candidate_authors(scope)
+  → select_author_targets()：join AuthorIdentity + Channel
+      过滤 channel.enabled / adapter.supports_author_feed
+  → 每个 (author, channel) 创建 IngestRun(run_type=author_crawl)
+  → adapter.fetch_author() → ingest_item(target_author=...)
+  → 更新 last_crawled_at / crawl_status
+```
+
+- **身份优先**：定向抓取按 `(channel_id, external_id)` 解析作者，不走模糊匹配；身份冲突保留原绑定并标记 `conflict`。
+- **雪球**：`XueqiuAdapter.supports_channel_feed=False`，只调用 `user_timeline.json`；Cookie 缺失或 401/403 抛 `CredentialsMissingError`，记录 `crawl_status=credentials_missing`，不返回空数据伪装成功。
+- **关注回填**：首次关注且有身份时，通过 FastAPI `BackgroundTasks` 触发 `backfill_author`；重复关注不重复触发。每日作者抓取作为恢复路径。
+- **新鲜度**：`author_crawl_min_interval_minutes` 内的作者跳过；启动刷新分别检查普通渠道与作者抓取最近成功时间。
+- **健康度**：`GET /admin/source-health` 返回渠道/作者最近运行、成功失败、抓取量、最后更新和 Cookie 是否配置（不返回 Cookie 值）。
+
+### 5.8 快照、简报与邮件（P0）
+
+- **评分快照**：每次个股详情/自选计算后写入 `stock_score_snapshots`，同一用户+股票+范围+窗口 1 小时内去重；记录 `total_points`、`relation_counts`、`evidence_level`、`evidence`、参与报告 ID。历史接口返回升序快照与 1d/7d/30d 变化。
+- **LLM 缓存**：只有 `qualitative_score IS NOT NULL` 的快照可作为 LLM 结论缓存，避免把确定性快照误当缓存。
+- **站内简报**：`GET /digest?date=&scope=&window=` 返回关注作者当日更新、自选股评分变化、证据缺口、推荐作者；日期按 `TIMEZONE` 本地自然日划分。
+- **每日邮件**：`send_daily_digests` 只选择 `digest_email_enabled=true` 且有邮箱的用户；`DigestDelivery(user_id, digest_date, channel)` 唯一约束保证幂等；无内容标记 `skipped/no_content`；SMTP 未配置时抛 `EmailNotConfigured`。
+- 邮件 HTML 对所有外部标题/作者名做 `html.escape`，附带纯文本 fallback 与 `List-Unsubscribe`；不记录 SMTP 密码或 Cookie。
 
 ---
 
@@ -1199,33 +1237,37 @@ heat      = default_weight^0.5
 
 #### 7.3.1 输入范围
 
-对某只股票 `S`，在用户选择的时间窗口内取三类报告，并统一执行 **90 天硬截止**：
+对某只股票 `S`，在用户选择的时间窗口内遍历候选报告，并统一执行 **90 天硬截止**。
+关系由 `_match_report` 按优先级判断，每篇报告对 `S` 最多返回一个关系：
 
-| 板块 | 来源 | 默认配额 | 默认半衰期 | 时间范围 |
-|---|---|---|---|---|
-| 个股 | `report_securities` 直接关联 `S` | 40 分 | 7 天 | 近 90 天 |
-| 行业 | `S` 所属行业的 `report_industries` | 40 分 | 14 天 | 近 90 天 |
-| 宏观 | `report_macro_topics`（按市场范围过滤） | 20 分 | 30 天 | 近 90 天 |
+| 关系 | 命中条件 | 默认配额 | 默认半衰期 | 相关度 |
+|---|---|---|---:|---:|---:|
+| 个股 `stock` | `analysis.stock_mentions` 明确提及 `S`；否则 `report.stock_codes` 包含 `S` | 40 分 | 7 天 | 0.5–1.0 / 0.7 |
+| 行业 `industry` | `S.industry_code` 出现在显式的 `report.industry_codes` 中 | 40 分 | 14 天 | 0.75 |
+| 宏观 `macro` | `primary_category=macro`、`macro` 在分类中，或存在宏观提及 | 20 分 | 30 天 | 0.45 |
 
+- 行业关系**只来自显式行业提及**；个股文章不会因为股票所属行业而扩散到同行业其他股票；
 - 前端时间窗口提供 `7d / 30d / 90d`，默认 `30d`；
 - 无论选择哪个窗口，`published_at` 早于 `as_of - 90 天` 的报告一律不参与计算；
 - “近 3 月”即最大可选窗口，不再提供“全部历史”。
 
-用户可在 `users.scoring_config` 覆盖板块配额与半衰期：
+用户可在 `users.scoring_config` 覆盖关系配额、半衰期与默认范围：
 
 ```json
 {
-  "category_weights": { "stock": 0.4, "industry": 0.4, "macro": 0.2 },
+  "relation_weights": { "stock": 0.4, "industry": 0.4, "macro": 0.2 },
   "half_life_days":   { "stock": 7, "industry": 14, "macro": 30 },
-  "scope": "all",
-  "include_unfollowed": true
+  "default_scope": "hybrid"
 }
 ```
 
 `scope`：
 
-- `all`（默认）：纳入全系统报告，未关注博主的权重用全局默认值；
-- `followed`：只纳入用户关注博主的报告（覆盖度低，但更贴合个人偏好）。
+- `personal`：只纳入用户关注作者的报告；
+- `hybrid`（默认）：纳入关注作者 + 系统精选作者；
+- `all`：纳入全站报告，用于研究对照。
+
+反馈排除：`report_security_feedback` 按 `(user_id, security_id)` 排除用户标记为“这篇与我无关”的报告；不影响其他股票或其他用户，可撤销。
 
 #### 7.3.2 聚合公式
 
@@ -1233,7 +1275,7 @@ heat      = default_weight^0.5
 
 ```text
 age_i     = max(0, as_of - published_at_i)        # 天
-recency_i = 0.5 ^ (age_i / half_life_category)   # 时间衰减
+recency_i = 0.5 ^ (age_i / half_life_relation)   # 时间衰减
 w_i       = confidence_i
           × sqrt(author_weight_i)                # 抑制极端作者权重
           × relevance_i                          # 报告与股票的相关度
@@ -1242,30 +1284,30 @@ w_i       = confidence_i
 
 半衰期越短，旧文章衰减越快：个股 7 天、行业 14 天、宏观 30 天。这样同一篇研报在“个股观点”里很快过期，在“宏观背景”里则保留更久。
 
-**第二步：板块加权信号。** 对每个有报告的板块 `c`：
+**第二步：关系加权信号。** 对每个有报告的关系 `c`：
 
 ```text
 signal_c = Σ(w_i × score_i) / Σ(w_i)             # [-1, 1]
 ```
 
-**第三步：缺失板块的配额重分配。** 只对实际有报告的板块分配配额：
+**第三步：缺失关系的配额重分配。** 只对实际有报告的关系分配配额：
 
 ```text
-present  = {c | 板块 c 至少有一篇报告}
+present  = {c | 关系 c 至少有一篇报告}
 share_c  = base_c / Σ(base_j for j in present)   # base 默认 0.4 / 0.4 / 0.2
 budget_c = 100 × share_c
 ```
 
-例如只有个股和宏观报告时，`share = 0.4/0.6 = 66.7%`、`0.2/0.6 = 33.3%`，个股板块自动获得 66.7 分配额。这样不会因为某个板块没有文章而凭空丢分，也不需要把缺失板块当作中性 0。
+例如只有个股和宏观报告时，`share = 0.4/0.6 = 66.7%`、`0.2/0.6 = 33.3%`，个股关系自动获得 66.7 分配额。这样不会因为某个关系没有文章而凭空丢分，也不需要把缺失关系当作中性 0。
 
-**第四步：板块得分与综合得分。**
+**第四步：关系得分与综合得分。**
 
 ```text
 points_c     = (signal_c + 1) / 2 × budget_c     # signal -1→0 分，+1→满配额
 total_points = Σ points_c                        # 0 ~ 100，天然不超过 100
 ```
 
-- 板块内所有文章先按权重求一个 `signal_c`，再压缩到该板块的配额，符合“5 篇文章加权后压缩到 40 分”的规则；
+- 同一关系内所有文章先按权重求一个 `signal_c`，再压缩到该关系的配额，符合“5 篇文章加权后压缩到 40 分”的规则；
 - 同一批文章不会因为篇数增加而无限抬高总分：增加文章只会让 `signal_c` 更稳定；
 - 缺失板块的配额按比例并入其余板块，UI 会标注“无相关研报 · 配额已并入其他板块”；
 - 保留 `final_score = total_points / 50 - 1` 作为兼容字段（50 分 ↔ 0，100 ↔ +1，0 ↔ -1），不再作为主展示值；
@@ -1273,7 +1315,20 @@ total_points = Σ points_c                        # 0 ~ 100，天然不超过 10
 
 示例：个股板块 `signal=0.60`、配额 40 → `(0.60+1)/2×40 = 32` 分；行业 `signal=-0.20`、配额 40 → `16` 分；宏观 `signal=0.10`、配额 20 → `11` 分；综合得分 `59/100`。
 
-#### 7.3.3 LLM 的职责
+#### 7.3.3 证据等级与展示
+
+分数之外，接口同时返回证据计数与等级，前端据此决定是否显示“综合得分”：
+
+| 条件 | `evidence.level` | 展示标签 | `display_score` | 结论约束 |
+|---|---|---|---|---|
+| `stock_count > 0` | `direct` | 个股证据 | 总分 | 正常综合结论 |
+| 否则 `industry_count > 0` | `industry` | 行业参考 | 总分 | 明确缺少个股直接证据 |
+| 否则 `macro_count > 0` | `macro` | 宏观参考 | 保留总分 | 必须说明缺少个股与行业证据，不构成个股综合结论 |
+| 都没有 | `none` | 证据不足 | `None` | 只说明证据不足 |
+
+`display_label` 在 `macro` 时为“宏观参考”，在 `none` 时为“证据不足”，其余为“综合得分”；接口另返回 `relation_counts`、`distinct_authors` 与 `coverage`。
+
+#### 7.3.4 LLM 的职责
 
 LLM **不生成、不修改任何数字**，只基于已算好的分数和 Top-K 报告（按 `w_i` 排序，最多 20 篇）撰写：
 
@@ -1296,7 +1351,7 @@ class StockConclusionOut(BaseModel):
 
 **引用约束：** `cited_report_ids` 必须来自输入列表；前端展示时链接到对应报告，防止“无来源结论”。
 
-#### 7.3.4 计算与缓存
+#### 7.3.5 计算与缓存
 
 - 个股评分是**用户级**的，缓存 key：`stock_score:{user_id}:{security_code}:{as_of_date}:{config_version}`；
 - 用户修改关注/权重/板块配额后，递增 `config_version`，相关缓存失效；
@@ -1307,11 +1362,11 @@ class StockConclusionOut(BaseModel):
 
 每个个股评分快照必须保存：
 
-- 公式参数与配置快照（板块配额、半衰期、90 天截止）；
-- 参与计算的报告 ID、文章权重、原始分数、置信度、时效系数；
-- 各板块的加权信号、实际配额、板块得分；
-- 综合得分 `total_points`；
-- LLM 结论与引用；
+- 公式参数与配置快照（关系配额、半衰期、90 天截止、评分范围）；
+- 参与计算的报告 ID、关系、文章权重、原始分数、置信度、时效系数；
+- 各关系的加权信号、实际配额、关系得分；
+- 综合得分 `total_points`、证据等级、证据计数与结论；
+- LLM 定性结论（`qualitative_score` 非空时才作为缓存）；
 - 模型与 Prompt 版本。
 
 这样才能回答用户的问题：“为什么是 78 分？”
@@ -1320,9 +1375,9 @@ UI 展示示例：
 
 ```text
 贵州茅台 600519.SH              综合得分 78 / 100
-├─ 个股板块  62.0 / 66.7 分（9 篇，加权信号 +0.86）
-├─ 宏观板块  15.9 / 33.3 分（3 篇，加权信号 -0.05）
-└─ 行业板块  无相关研报 · 配额已并入其他板块
+├─ 个股关系  62.0 / 66.7 分（9 篇，加权信号 +0.86）
+├─ 宏观关系  15.9 / 33.3 分（3 篇，加权信号 -0.05）
+└─ 行业关系  无相关研报 · 配额已并入其他关系
 
 结论：高端白酒动销边际改善，机构上调盈利预测；但宏观消费数据偏弱，
       短期估值修复空间有限。
@@ -1369,7 +1424,7 @@ UI 展示示例：
 | 配置 | 存储 | 默认值 |
 |---|---|---|
 | 关注博主权重 | `follows.weight` | 1.0 |
-| 板块配额 | `users.scoring_config.category_weights` | 0.4 / 0.4 / 0.2（个股/行业/宏观） |
+| 关系配额 | `users.scoring_config.relation_weights` | 0.4 / 0.4 / 0.2（个股/行业/宏观） |
 | 半衰期 | `users.scoring_config.half_life_days` | 7 / 14 / 30 天 |
 | 报告最大年龄 | 全局常量 `MAX_REPORT_AGE_DAYS` | 90 天 |
 | 聚合范围 | `users.scoring_config.scope` | all |
@@ -1429,7 +1484,9 @@ UI 展示示例：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/authors?q=&channel_id=&type=&cursor=` | 搜索博主 |
+| GET | `/authors?q=&channel_id=&type=&followed=&curated=` | 搜索/筛选博主 |
+| GET | `/authors/recommended` | 系统精选且未关注作者 |
+| POST | `/authors/import` | 导入雪球作者（`external_id` 或 `profile_url`，可 `follow=true`） |
 | POST | `/authors` | 用户新增博主（同名自动提示合并） |
 | GET | `/authors/{id}` | 博主详情 |
 | PATCH | `/authors/{id}` | 修改（本人创建的 pending 或管理员） |
@@ -1456,10 +1513,11 @@ UI 展示示例：
 | GET | `/watchlist` | 自选股列表（含最新评分摘要） |
 | POST | `/watchlist` | 添加，body `{ "code": "600519.SH" }` |
 | DELETE | `/watchlist/{code}` | 移除 |
-| GET | `/stocks/{code}/analysis?refresh=false` | 个股综合评分（用户视角） |
-| POST | `/stocks/{code}/analysis/refresh` | 异步刷新，返回 `job_id` |
-| GET | `/stocks/{code}/reports?category=&cursor=` | 关联报告 |
-| GET | `/stocks/{code}/score-history?days=30` | 历史评分曲线 |
+| GET | `/stocks/{code}?scope=&window=&limit=` | 个股综合评分（关系拆解、证据等级、评分变化） |
+| GET | `/stocks/{code}/history?scope=&window=&days=30` | 评分快照、升序历史与 1d/7d/30d 变化 |
+| POST | `/stocks/{code}/feedback` | 标记某篇报告“这篇与我无关”（用户+股票维度） |
+| DELETE | `/stocks/{code}/feedback/{report_id}` | 撤销反馈 |
+| GET | `/digest?date=&scope=&window=` | 站内每日简报 |
 
 #### 管理端
 
@@ -1472,6 +1530,11 @@ UI 展示示例：
 | GET | `/admin/crawl-runs` | 采集运行记录 |
 | GET | `/admin/authors/pending` | 待审核博主 |
 | POST | `/admin/authors/{id}/merge` | 合并重复博主 |
+| PATCH | `/admin/authors/{id}/curation` | 精选状态、排名、抓取开关、质量分、行业标签 |
+| PUT | `/admin/authors/{id}/identities` | 绑定雪球身份（冲突返回 409） |
+| POST | `/admin/author-crawl` | 手动触发作者抓取（可指定作者/强制） |
+| GET | `/admin/source-health` | 渠道/作者运行健康度（不返回 Cookie） |
+| POST | `/admin/digest/send` | 联调每日邮件（可指定日期/用户） |
 | GET | `/admin/metrics` | 任务/成本概览 |
 
 ### 9.3 示例：信息流响应
@@ -1522,7 +1585,7 @@ UI 展示示例：
       "confidence": 0.4542,
       "n_eff": 8.1873,
       "max_age_days": 90,
-      "category_weights": { "stock": 0.4, "industry": 0.4, "macro": 0.2 },
+      "relation_weights": { "stock": 0.4, "industry": 0.4, "macro": 0.2 },
       "half_life_days": { "stock": 7, "industry": 14, "macro": 30 },
       "category_scores": [
         {

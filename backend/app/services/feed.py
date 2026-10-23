@@ -217,6 +217,14 @@ def serialize_report(
             "name": author.canonical_name if author else (report.raw_author_name or "未知"),
             "weight": follow.weight if follow else (author.default_weight if author else 0.5),
             "followed": follow is not None,
+            "is_curated": bool(author.is_curated) if author else False,
+            "source_layer": (
+                "following"
+                if follow is not None
+                else "curated"
+                if author is not None and author.is_curated
+                else "market"
+            ),
         },
         "primary_category": report.primary_category,
         "categories": report.categories or [],

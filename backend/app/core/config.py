@@ -60,10 +60,35 @@ class Settings(BaseSettings):
     crawl_request_timeout: int = 15
     crawl_max_items_per_channel: int = 50
 
+    # Author-targeted crawling
+    xueqiu_cookie: str = ""
+    author_crawl_enabled: bool = True
+    author_crawl_items_per_author: int = 20
+    author_crawl_max_authors: int = 50
+    author_crawl_min_interval_minutes: int = 60
+    author_crawl_interval_minutes: int = 30
+
     # Startup freshness check: crawl immediately when the last successful
     # crawl is older than this threshold; skip otherwise.
     startup_refresh_enabled: bool = True
     startup_refresh_stale_minutes: int = 60
+
+    # Daily digest email
+    digest_email_enabled: bool = True
+    digest_email_hour: int = 7
+    digest_email_minute: int = 10
+    frontend_base_url: str = "http://localhost:5173"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = "Research Scout <noreply@example.com>"
+    smtp_starttls: bool = True
+    smtp_ssl: bool = False
+
+    @property
+    def email_enabled(self) -> bool:
+        return bool(self.smtp_host) and self.digest_email_enabled
 
     @field_validator("database_url")
     @classmethod

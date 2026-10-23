@@ -37,12 +37,14 @@ class UserOut(ORMModel):
     role: str
     status: str
     scoring_config: dict = Field(default_factory=dict)
+    digest_email_enabled: bool = False
     created_at: datetime
 
 
 class UserUpdate(BaseModel):
     nickname: str | None = Field(default=None, min_length=1, max_length=64)
     scoring_config: dict | None = None
+    digest_email_enabled: bool | None = None
 
 
 class PasswordChange(BaseModel):

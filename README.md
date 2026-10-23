@@ -4,7 +4,7 @@
 
 每天自动从新浪财经、华尔街见闻、腾讯新闻、雪球、Twitter/X 等渠道采集内容，用 LLM 完成**分类、方向评分、摘要、关键词和实体识别**；用户关注自己信任的博主并设置权重，在信息流中高效阅读；把股票加入自选后，系统按**个股、行业、宏观**三类信号聚合出综合评分与 AI 结论。
 
-> 当前状态：**Local MVP 已可运行**（FastAPI 后端 + Vue/Vant 移动端前端）。已实现新浪财经、华尔街见闻与 Mock 渠道，腾讯新闻 / 雪球 / Twitter-X 在路线图中。完整设计见 [docs/architecture-design.md](docs/architecture-design.md)。
+> 当前状态：**P0 个人研究助手已可运行**（FastAPI 后端 + Vue/Vant 移动端前端）。已实现新浪财经、华尔街见闻、雪球作者时间线与 Mock 渠道；腾讯新闻 / Twitter-X 在路线图中。产品规则见 [docs/product-redesign.md](docs/product-redesign.md)，完整设计见 [docs/architecture-design.md](docs/architecture-design.md)。
 
 ---
 
@@ -66,11 +66,13 @@ make dev-frontend  # Vite     :5173（/api 代理到 :8000）
 - 接入真实模型时设置 `LLM_MOCK=false`、`LLM_BASE_URL`、`LLM_API_KEY`，模型默认 `deepseek-v4-flash`；
 - 数据库迁移：`cd backend && alembic upgrade head`；本地默认 `AUTO_CREATE_TABLES=true`，启动时会自动建表；
 - **启动自动刷新**：后端启动后会在后台检查最近一次成功抓取的时间。1 小时内则跳过；超过 1 小时（或从未成功抓取）则立即抓取并分析。可用 `STARTUP_REFRESH_ENABLED`、`STARTUP_REFRESH_STALE_MINUTES` 调整，长任务不会阻塞服务启动。
+- **雪球作者抓取**：设置 `XUEQIU_COOKIE`（浏览器登录后的 Cookie 请求头）；只抓精选作者与用户关注作者的时间线，不做全站抓取。未配置时作者状态为 `credentials_missing`，不会伪装成抓取成功。
+- **每日邮件**：站内简报无需配置；开启邮件还需设置 `SMTP_HOST` 等，并在“设置 → 每日邮件”中由用户主动开启。
 
 ### 测试与检查
 
 ```bash
-make test   # 后端 pytest（36 项）
+make test   # 后端 pytest（69 项）
 make lint   # ruff + vue-tsc
 make build  # 前端生产构建
 ```
@@ -85,11 +87,15 @@ make build  # 前端生产构建
 | 多用户注册、登录、JWT 刷新 | ✅ 已实现 |
 | 作者解析、别名、关注与个人权重 | ✅ 已实现，支持手动添加作者 |
 | 关注流 / 发现热门流、多样性重排、游标分页 | ✅ 已实现 |
-| 自选股、三层聚合评分、AI 结论、评分快照 | ✅ 已实现 |
-| 移动端前端（首页 / 自选 / 作者 / 我的 / 详情） | ✅ 已实现 |
+| 关系化个股评分（`stock > industry > macro`）、证据等级、AI 结论、评分快照 | ✅ 已实现 |
+| 评分范围 `personal / hybrid / all`，默认关注+精选 | ✅ 已实现 |
+| “这篇与我无关”反馈与撤销 | ✅ 已实现 |
+| 作者定向抓取（精选 ∪ 关注）、雪球作者时间线、关注回填 | ✅ 已实现 |
+| 站内每日简报 + 每日邮件（幂等） | ✅ 已实现 |
+| 移动端前端（首页 / 简报 / 自选 / 作者 / 我的 / 详情） | ✅ 已实现 |
 | Celery 定时采集与分析 | ✅ 已接入（Docker Compose 含 worker / beat） |
-| 启动时按新鲜度自动抓取 | ✅ 已实现，最近成功抓取 1 小时内跳过 |
-| 腾讯新闻、雪球、Twitter/X 适配器 | 🚧 路线图 |
+| 启动时按新鲜度自动抓取 | ✅ 已实现，渠道与作者各自检查新鲜度 |
+| 腾讯新闻、Twitter/X 适配器 | 🚧 路线图 |
 | 管理端 UI、PDF 研报解析、pgvector 语义检索 | 🚧 路线图 |
 
 ---
@@ -136,7 +142,7 @@ make build  # 前端生产构建
 |---|---|---|---|
 | 博主默认权重 | 全局 | 博主的基础可信度/影响力 | 1.0 |
 | 用户关注权重 | 用户 | 当前用户对该博主的个人信任权重 | 1.0 |
-| 分类权重 | 用户 | 个股 / 行业 / 宏观在个股聚合中的占比 | 1.0 / 0.5 / 0.25 |
+| 关系配额 | 用户 | 个股 / 行业 / 宏观关系在个股聚合中的基础占比 | 40% / 40% / 20% |
 
 用户视角下的有效博主权重：
 
@@ -294,28 +300,31 @@ heat = default_weight^0.5
 
 ```mermaid
 flowchart TD
-    A["用户打开自选股"] --> B["读取股票所属行业"]
-    B --> C1["个股报告<br/>直接关联该股票"]
-    B --> C2["行业报告<br/>该股票所属行业"]
-    B --> C3["宏观报告<br/>按市场范围过滤"]
+    A["用户打开自选股"] --> B["候选池<br/>personal / hybrid / all"]
+    B --> C1["直接提及该股票 → stock"]
+    B --> C2["明确提及所属行业 → industry"]
+    B --> C3["宏观内容 → macro"]
 
-    C1 --> D["近 90 天 + 时间衰减"]
+    C1 --> D["每篇对同一股票只计一次<br/>近 90 天 + 时间衰减"]
     C2 --> D
     C3 --> D
 
-    D --> E["板块内加权信号<br/>文章权重 × 方向分"]
-    E --> F["板块配额得分<br/>个股 40 / 行业 40 / 宏观 20"]
-    F --> G["缺失板块按比例并入<br/>总分封顶 100"]
-    G --> H["LLM 生成结论 + 评分构成图"]
+    D --> E["关系内加权信号<br/>文章权重 × 方向分"]
+    E --> F["关系配额得分<br/>个股 40 / 行业 40 / 宏观 20"]
+    F --> G["缺失关系按比例并入<br/>总分封顶 100"]
+    G --> H["证据等级 + LLM 结论 + 评分构成图"]
 ```
 
-- 默认纳入**全站报告**（`scope=all`），用户可切换为**仅关注博主**（`scope=followed`）；
+- 默认候选池为**关注作者 + 系统精选作者**（`scope=hybrid`），可切换 `personal`（仅关注）或 `all`（全站）；
 - **只纳入近 90 天**的报告，更早的文章不参与评分；
-- 板块配额默认：个股 40 / 行业 40 / 宏观 20；某板块没有相关报告时，其配额按比例并入其余板块；
+- 每只股票独立判断文章关系，优先级 `stock > industry > macro`；一篇文章对同一只股票只计一次；
+- 行业关系只来自显式行业提及，个股文章不会扩散到同行业其他股票；
+- 关系配额默认：个股 40 / 行业 40 / 宏观 20；某关系没有相关报告时，其配额按比例并入其余关系；
 - 时间衰减半衰期：个股 7 天 / 行业 14 天 / 宏观 30 天，越新的文章权重越高；
+- 证据等级：个股证据 / 行业参考 / 宏观参考 / 证据不足；宏观-only 保留分数但标注“宏观参考”，证据不足不显示分数；
 - 同一篇报告被多个渠道转载时，按 cluster 只计算一次；
-- 个股页展示总分（0–100）、板块得分、文章权重拆解与评分构成图；
-- 每次评分保存快照，记录当时的权重配置、参与报告、分项得分和模型版本，能回答“为什么是这个分”。
+- 个股页展示总分、关系得分、文章权重拆解、评分历史与变化；支持“这篇与我无关”；
+- 每次评分保存快照，记录关系配额、参与报告、证据等级和模型版本，能回答“为什么是这个分”。
 
 ---
 
@@ -336,7 +345,14 @@ flowchart TD
 
 ### 5.2 个股综合评分
 
-#### 第一步：筛选与时间衰减
+#### 第一步：关系判定与时间衰减
+
+先判断文章对目标股票的关系，优先级为 `stock > industry > macro`：
+
+1. `analysis.stock_mentions` 直接提及该股票，或 `report.stock_codes` 包含该股票 → 个股；
+2. `security.industry_code` 出现在显式 `report.industry_codes` 中 → 行业；
+3. 宏观分类 / 宏观提及 → 宏观；
+4. 都不满足 → 不参与该股票评分。
 
 只纳入**最近 90 天**的相关报告。每篇报告的有效权重为：
 
@@ -344,12 +360,12 @@ flowchart TD
 w_i = confidence_i
     × sqrt(author_weight_i)
     × relevance_i
-    × 0.5^(age_days_i / half_life_days_i)
+    × 0.5^(age_days_i / half_life_relation)
 ```
 
 默认半衰期：
 
-| 板块 | 半衰期 | 含义 |
+| 关系 | 半衰期 | 含义 |
 |---|---:|---|
 | 个股 | 7 天 | 个股消息衰减最快 |
 | 行业 | 14 天 | 行业景气变化中等 |
@@ -357,9 +373,9 @@ w_i = confidence_i
 
 例如一篇 30 天前的个股报告，权重只剩 `0.5^(30/7) ≈ 5.2%`；同样 30 天前的宏观报告仍有 `50%`。
 
-#### 第二步：板块内加权信号
+#### 第二步：关系内加权信号
 
-对每个板块 `c`（个股 / 行业 / 宏观）：
+对每个关系 `c`（个股 / 行业 / 宏观）：
 
 ```text
 signal_c = Σ(w_i × score_i) / Σw_i        # 范围 [-1, 1]
@@ -367,32 +383,32 @@ signal_c = Σ(w_i × score_i) / Σw_i        # 范围 [-1, 1]
 
 先除以权重之和，避免“文章越多分数越极端”。
 
-#### 第三步：按 40 / 40 / 20 分配板块配额
+#### 第三步：按 40 / 40 / 20 分配关系配额
 
 ```text
 base = { stock: 0.40, industry: 0.40, macro: 0.20 }
 ```
 
-只保留有相关报告的板块，并把缺失板块的配额按比例分给其余板块：
+只保留有相关报告的关系，并把缺失关系的配额按比例分给其余关系：
 
 ```text
-share_c = base_c / Σ(base_j for j in present_categories)
+share_c = base_c / Σ(base_j for j in present_relations)
 budget_c = 100 × share_c
 ```
 
 例如只有个股和宏观报告时，配额变为个股 `66.7`、宏观 `33.3`；只有个股报告时，个股拿满 `100`。
 
-#### 第四步：板块得分与总分
+#### 第四步：关系得分与总分
 
 ```text
 points_c = (signal_c + 1) / 2 × budget_c
 total_points = Σ points_c                  # 0 ≤ total_points ≤ 100
 ```
 
-- `signal = 0`（中性）→ 拿到该板块一半配额；
+- `signal = 0`（中性）→ 拿到该关系一半配额；
 - `signal = +1`（全部看多）→ 拿满配额；
-- `signal = -1`（全部看空）→ 该板块得 0 分；
-- 三个板块相加即为 0–100 的综合得分。
+- `signal = -1`（全部看空）→ 该关系得 0 分；
+- 三个关系相加即为 0–100 的综合得分。
 
 #### 参考实现
 
@@ -401,31 +417,36 @@ total_points = Σ points_c                  # 0 ≤ total_points ≤ 100
 if age_days > 90:
     continue
 
-decay = 0.5 ** (age_days / half_life[category])
+relation = match_report(report, security)  # stock > industry > macro
+if relation is None:
+    continue
+
+decay = 0.5 ** (age_days / half_life[relation])
 w = confidence * math.sqrt(author_weight) * relevance * decay
 
-signal[category] += w * score
-weight_sum[category] += w
+signal[relation] += w * score
+weight_sum[relation] += w
 
-# 板块信号
+# 关系信号
 signal_c = signal[c] / weight_sum[c]
 
-# 缺失板块重新分配配额后
+# 缺失关系重新分配配额后
 points_c = (signal_c + 1) / 2 * budget_c
 total_points = sum(points_c)
 ```
 
 - 数值完全由公式决定，可复现、可回测；
 - LLM 只负责写结论文字，**不修改分数**；
-- 同时保存 `total_points`、各板块 `points / budget`、文章级权重拆解，前端据此绘制评分构成图；
+- 同时保存 `total_points`、各关系 `points / budget`、文章级权重拆解，前端据此绘制评分构成图；
 - `n_eff` 与 `confidence` 仅作为“证据广度”展示，不再对分数做收缩。
 
 ### 5.3 为什么这样设计
 
-- **板块配额固定**：避免某一类文章数量多就主导结论；
-- **缺失板块配额重分配**：没有行业报告时，不让总分被凭空扣掉 40 分；
+- **关系配额固定**：避免某一类文章数量多就主导结论；
+- **关系由证据决定**：一篇文章必须先真正关联到该股票，才进入对应配额，避免宏观噪声稀释个股评分；
+- **缺失关系配额重分配**：没有行业报告时，不让总分被凭空扣掉 40 分；
 - **时间衰减 + 90 天硬截止**：让评分反映当前观点，而不是长期历史平均；
-- **板块内先归一化**：文章数量不影响信号强度，只影响证据广度；
+- **关系内先归一化**：文章数量不影响信号强度，只影响证据广度；
 - **全局分析不按用户重复调用**：控制 LLM 成本；
 - **评分数值与解释分离**：避免 LLM 幻觉出一个无法解释的分数；
 - **聚类去重**：防止转载放大同一观点；
@@ -491,15 +512,17 @@ LLM_MODEL_AGGREGATE=deepseek-v4-flash
 - 关注博主 + 个人权重、手动添加作者；
 - **关注信息流**（智能 / 最新）；
 - **发现/热门信息流**（热门 / 最新 + 时间窗口 + 多样性重排）；
-- 自选股 + 个股/行业/宏观三层聚合评分 + AI 结论 + 评分快照；
-- 默认全站聚合（`scope=all`），用户可切换仅关注（`scope=followed`）；
+- 自选股 + 关系化个股评分 + 证据等级 + AI 结论 + 评分快照；
+- 默认关注+精选（`scope=hybrid`），可切换仅关注（`personal`）或全站（`all`）；
+- 作者定向抓取（精选 ∪ 关注）、雪球作者时间线、关注回填；
+- 站内每日简报 + 每日邮件；
 - **A 股**证券主数据、行业映射与搜索；
 - 管理 API：渠道启停、手动触发采集/分析、任务与统计查看（管理 UI 待做）；
 - Vue + Vant 移动端前端：首页、研报详情、自选、个股详情、作者、设置。
 
 ### 尚未完成
 
-- 腾讯新闻、雪球、Twitter/X 适配器；
+- 腾讯新闻、Twitter/X 适配器；
 - 管理端 Web UI、作者合并 UI；
 - PDF 研报解析、对象存储、pgvector 语义检索；
 - 博主历史准确率、组合评分、通知与 RAG 问答。
@@ -511,7 +534,7 @@ LLM_MODEL_AGGREGATE=deepseek-v4-flash
 | P0 | 新浪财经 | 列表 API / 自建 RSSHub | ✅ 已实现：滚动新闻 API + 详情正文 |
 | P0 | 华尔街见闻 | 热榜 API + 7x24 快讯 | ✅ 已实现：文章列表 + 详情 API（`extract=0`） |
 | P1 | 腾讯新闻 | 财经频道/搜索 + 列表 API | 列表自带 `source` 发布者字段，适合博主解析 |
-| P1 | 雪球 | 登录态 API / 自建 RSSHub | 作者关注的核心来源，但 cookie/反爬维护成本最高 |
+| P1 | 雪球 | 登录态作者时间线 API | ✅ 已实现作者定向抓取；Cookie 缺失时明确失败，不做全站抓取 |
 | P2 | Twitter/X | 官方 API v2 | 配额与费用，按账号/关键词抓取 |
 | P2 | 研报源 / PDF | RSS / 开放接口 / PDF | 价值高，解析与版权复杂度高 |
 
@@ -537,18 +560,18 @@ research-scout-agent/
 │   ├── app/
 │   │   ├── api/             # FastAPI 路由（auth / authors / feed / watchlist / admin）
 │   │   ├── agents/          # LangGraph 分析图、Prompt、LLM 调用、规则降级
-│   │   ├── collectors/      # 渠道适配器（sina / wallstreetcn / mock）+ 注册表
+│   │   ├── collectors/      # 渠道适配器（sina / wallstreetcn / xueqiu / mock）+ 注册表
 │   │   ├── core/            # 配置与常量
 │   │   ├── db/              # Base、UTC 类型、async session
 │   │   ├── models/          # SQLAlchemy 模型
 │   │   ├── schemas/         # Pydantic Schema
 │   │   ├── scoring/         # 文本哈希、SimHash、热度、个股聚合公式
-│   │   ├── services/        # 采集、分析、作者、信息流、自选、认证、种子数据
+│   │   ├── services/        # 采集、分析、作者抓取、信息流、自选、快照、简报、邮件
 │   │   ├── tasks/           # Celery app 与定时任务
 │   │   ├── cli.py           # init-db / seed / seed-demo / crawl / analyze
 │   │   └── main.py
-│   ├── alembic/             # 初始迁移（versions/）
-│   ├── tests/               # pytest（评分、文本、采集、API 流程）
+│   ├── alembic/             # 迁移（versions/，含关系评分与作者抓取）
+│   ├── tests/               # pytest（关系评分、快照、作者抓取、简报、API 流程）
 │   ├── Dockerfile
 │   └── pyproject.toml
 ├── frontend/
@@ -564,6 +587,7 @@ research-scout-agent/
 │   ├── Dockerfile
 │   └── vite.config.ts
 ├── docs/
+│   ├── product-redesign.md
 │   └── architecture-design.md
 ├── docker-compose.yml       # Postgres / Redis / backend / worker / beat / frontend
 ├── Makefile
@@ -575,7 +599,8 @@ research-scout-agent/
 
 ## 10. 文档
 
-- [架构设计文档](docs/architecture-design.md)：数据模型、采集、LangGraph 流水线、评分公式、API、前端、部署与路线图。
+- [产品重构说明](docs/product-redesign.md)：个人研究助手定位、关系规则、证据等级、评分范围与 P0 指标。
+- [架构设计文档](docs/architecture-design.md)：数据模型、作者定向抓取、LangGraph 流水线、关系评分、快照/简报/邮件、API、前端与部署。
 - [参考项目调研](docs/architecture-design.md#56-参考项目调研cn-news-digest)：对 `cn-news-digest` 的来源清单、实测结果与质量评估（仅借鉴思路，不复制代码）。
 
 ---

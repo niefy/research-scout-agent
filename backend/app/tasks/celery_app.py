@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from celery import Celery
 from celery.schedules import crontab
 
@@ -26,6 +28,26 @@ celery_app.conf.update(
             "schedule": crontab(
                 hour=settings.crawl_daily_hour,
                 minute=settings.crawl_daily_minute,
+            ),
+        },
+        "author-crawl": {
+            "task": "app.tasks.jobs.crawl_authors_and_analyze",
+            "schedule": timedelta(
+                minutes=max(1, settings.author_crawl_interval_minutes)
+            ),
+        },
+        "daily-score-snapshots": {
+            "task": "app.tasks.jobs.snapshot_scores",
+            "schedule": crontab(
+                hour=settings.crawl_daily_hour,
+                minute=50,
+            ),
+        },
+        "daily-digest-email": {
+            "task": "app.tasks.jobs.send_daily_digests",
+            "schedule": crontab(
+                hour=settings.digest_email_hour,
+                minute=settings.digest_email_minute,
             ),
         },
     },

@@ -102,18 +102,14 @@ async def analyze_report(
         await session.commit()
         return False
 
+    # Only explicit industry mentions define an industry relation. Deriving
+    # industries from mentioned stocks would fan a single-stock article out to
+    # every peer in that industry.
     industry_code_set: set[str] = set()
     for mention in analysis.industry_mentions:
         code = industry_codes.get(mention.name)
         if code:
             industry_code_set.add(code)
-    for mention in analysis.stock_mentions:
-        if not mention.code:
-            continue
-        for candidate in candidates:
-            if candidate["code"] == mention.code and candidate.get("industry_code"):
-                industry_code_set.add(candidate["industry_code"])
-                break
 
     version = (
         await session.scalar(

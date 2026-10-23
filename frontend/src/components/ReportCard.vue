@@ -3,7 +3,13 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 
 import type { ReportItem } from '@/api/types'
-import { categoryLabel, directionLabel, directionClass, formatTime } from '@/utils/format'
+import {
+  categoryLabel,
+  directionLabel,
+  directionClass,
+  formatTime,
+  relationLabel,
+} from '@/utils/format'
 
 const props = defineProps<{ report: ReportItem }>()
 const router = useRouter()
@@ -23,6 +29,18 @@ function open(): void {
     <header class="report-card__meta">
       <span class="chip" :class="chipClass">{{ categoryLabel(report.primary_category) }}</span>
       <span class="report-card__author">{{ report.author?.name ?? report.source_name ?? '未知来源' }}</span>
+      <span
+        v-if="report.author?.followed"
+        class="chip chip--accent report-card__source"
+      >
+        关注
+      </span>
+      <span
+        v-else-if="report.author?.is_curated"
+        class="chip chip--outline report-card__source"
+      >
+        精选
+      </span>
       <span class="report-card__sep">·</span>
       <span>{{ formatTime(report.published_at) }}</span>
       <span v-if="report.is_reprint" class="chip chip--outline report-card__flag">转载</span>
@@ -37,6 +55,13 @@ function open(): void {
 
     <footer class="report-card__footer">
       <div class="tag-row">
+        <span
+          v-if="report.relation"
+          class="chip"
+          :class="`chip--${report.relation}`"
+        >
+          {{ relationLabel(report.relation) }}
+        </span>
         <span v-for="code in report.stock_codes.slice(0, 2)" :key="code" class="chip chip--stock">
           {{ code }}
         </span>
@@ -88,6 +113,13 @@ function open(): void {
   white-space: nowrap;
   font-weight: 600;
   color: var(--rs-ink-soft);
+}
+
+.report-card__source {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 9.5px;
+  line-height: 16px;
 }
 
 .report-card__sep {

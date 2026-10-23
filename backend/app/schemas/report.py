@@ -17,6 +17,8 @@ class AuthorBrief(BaseModel):
     name: str
     weight: float = 1.0
     followed: bool = False
+    is_curated: bool = False
+    source_layer: str | None = None
 
 
 class ReportOut(ORMModel):

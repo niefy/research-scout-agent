@@ -34,6 +34,18 @@ class CollectError(RuntimeError):
     pass
 
 
+class CredentialsMissingError(CollectError):
+    """Raised when a source requires credentials that are absent or expired."""
+
+
+@dataclass(frozen=True)
+class AuthorTarget:
+    external_id: str
+    display_name: str | None = None
+    profile_url: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class RawItem:
     external_id: str
@@ -203,6 +215,8 @@ class ChannelAdapter(ABC):
     key: str
     display_name: str
     default_config: dict[str, Any] = {}
+    supports_channel_feed: bool = True
+    supports_author_feed: bool = False
 
     @abstractmethod
     async def fetch(
@@ -212,6 +226,15 @@ class ChannelAdapter(ABC):
         limit: int,
     ) -> list[RawItem]:
         raise NotImplementedError
+
+    async def fetch_author(
+        self,
+        client: httpx.AsyncClient,
+        config: dict[str, Any],
+        target: AuthorTarget,
+        limit: int,
+    ) -> list[RawItem]:
+        raise NotImplementedError(f"{self.key} does not support author feeds")
 
     async def enrich(self, client: httpx.AsyncClient, item: RawItem) -> RawItem:
         return item

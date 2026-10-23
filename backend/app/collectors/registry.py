@@ -4,6 +4,7 @@ from app.collectors.base import ChannelAdapter
 from app.collectors.mock import MockAdapter
 from app.collectors.sina import SinaAdapter
 from app.collectors.wallstreetcn import WallStreetCNAdapter
+from app.collectors.xueqiu import XueqiuAdapter
 
 _ADAPTERS: dict[str, ChannelAdapter] = {}
 
@@ -15,7 +16,7 @@ def register(adapter: ChannelAdapter) -> ChannelAdapter:
     return adapter
 
 
-for _adapter in (SinaAdapter(), WallStreetCNAdapter(), MockAdapter()):
+for _adapter in (SinaAdapter(), WallStreetCNAdapter(), XueqiuAdapter(), MockAdapter()):
     register(_adapter)
 
 
