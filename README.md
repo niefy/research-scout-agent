@@ -155,58 +155,9 @@ make build  # 前端生产构建
 
 ## 3. 系统总览
 
-```mermaid
-flowchart TB
-    subgraph Sources["外部内容源"]
-        S1["雪球"]
-        S2["Twitter / X"]
-        S3["腾讯新闻"]
-        S4["研报 / RSS"]
-    end
+![Research Scout 系统架构](docs/assets/architecture.png)
 
-    subgraph Ingestion["采集层"]
-        SCHED["Celery Beat<br/>每日调度"]
-        ADAPTERS["渠道适配器<br/>增量抓取 / 限流 / 重试"]
-    end
-
-    subgraph AI["AI 分析层"]
-        GRAPH["LangGraph 工作流<br/>清洗 → 去重 → 博主解析 → 分析 → 实体链接"]
-        LLM["LLM<br/>OpenAI 兼容协议"]
-    end
-
-    subgraph Storage["数据层"]
-        PG[("PostgreSQL<br/>报告 / 分析 / 用户")]
-        REDIS[("Redis<br/>队列 / 缓存 / 限流")]
-        OBJ[("对象存储<br/>原始 HTML / PDF")]
-    end
-
-    subgraph Service["应用层"]
-        FEED["信息流服务<br/>关注 / 发现热门"]
-        STOCK["个股聚合服务"]
-        USER["用户 / 关注 / 自选股"]
-    end
-
-    subgraph Client["前端 Vue 3 + Vant"]
-        C1["信息流"]
-        C2["自选股"]
-        C3["博主与权重"]
-    end
-
-    Sources --> ADAPTERS
-    SCHED --> ADAPTERS
-    ADAPTERS --> OBJ
-    ADAPTERS --> GRAPH
-    GRAPH <--> LLM
-    GRAPH --> PG
-    GRAPH --> REDIS
-    PG --> FEED
-    PG --> STOCK
-    REDIS --> FEED
-    USER --> FEED
-    FEED --> C1
-    STOCK --> C2
-    USER --> C3
-```
+> 图片源文件见 [docs/assets/architecture.html](docs/assets/architecture.html)，使用 headless Chrome 截图为 PNG，便于在 README 中稳定展示。
 
 ### 分层职责
 

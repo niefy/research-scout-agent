@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Research Scout 系统架构</title>
+<!--
+  架构图源文件。生成 PNG：
+  chrome-headless-shell --headless --no-sandbox --hide-scrollbars \
+    --force-device-scale-factor=2 --window-size=1500,1112 \
+    --screenshot=architecture.png file://$PWD/architecture.html
+-->
+<style>
+  :root {
+    --ink: #172033;
+    --muted: #657184;
+    --faint: #8b97a8;
+    --line: #dfe6ef;
+    --card: #ffffff;
+    --bg: #f4f7fb;
+    --teal: #0f766e;
+    --teal-bg: #e7f5f2;
+    --violet: #6d28d9;
+    --violet-bg: #f2edff;
+    --blue: #1d4ed8;
+    --blue-bg: #eaf1ff;
+    --amber: #b45309;
+    --amber-bg: #fff3e3;
+    --rose: #be123c;
+    --rose-bg: #fdedf2;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    width: 1500px;
+    height: 1112px;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 8% 0%, rgba(15, 118, 110, 0.07), transparent 28%),
+      radial-gradient(circle at 94% 4%, rgba(109, 40, 217, 0.06), transparent 26%),
+      var(--bg);
+    color: var(--ink);
+    font-family: "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    width: 1500px;
+    height: 1112px;
+    padding: 42px 48px 38px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- header ---------- */
+  header {
+    height: 76px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex: 0 0 auto;
+  }
+  .brandmark {
+    width: 50px;
+    height: 50px;
+    border-radius: 13px;
+    background: linear-gradient(145deg, #123b57, #0f766e);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    box-shadow: 0 8px 18px rgba(15, 118, 110, 0.18);
+  }
+  h1 {
+    margin: 0;
+    font-size: 29px;
+    line-height: 1.15;
+    letter-spacing: 0.2px;
+    font-weight: 750;
+  }
+  .subtitle {
+    margin: 5px 0 0;
+    font-size: 13.5px;
+    color: var(--muted);
+    letter-spacing: 0.15px;
+  }
+  .status {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 13px;
+    border: 1px solid #cfe4df;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.72);
+    color: #24645e;
+    font-size: 12.5px;
+    font-weight: 650;
+  }
+  .status .pulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #14b8a6;
+    box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.13);
+  }
+
+  /* ---------- main three columns ---------- */
+  .main {
+    flex: 1 1 auto;
+    min-height: 0;
+    margin-top: 18px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 62px minmax(0, 1fr) 62px minmax(0, 1fr);
+  }
+  .stage { min-width: 0; display: flex; flex-direction: column; }
+  .stage-head {
+    height: 40px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+    padding: 0 2px;
+  }
+  .stage-num {
+    width: 27px;
+    height: 27px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11.5px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+  }
+  .stage-title { font-size: 17px; font-weight: 750; letter-spacing: 0.2px; }
+  .stage-en {
+    margin-left: auto;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 1.7px;
+    color: var(--faint);
+  }
+  .stack { display: flex; flex-direction: column; gap: 13px; margin-top: 8px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 15px;
+    padding: 17px 18px;
+    box-shadow: 0 6px 18px rgba(23, 32, 51, 0.035);
+  }
+  .card-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 750;
+    color: #3a4658;
+    letter-spacing: 0.35px;
+    margin-bottom: 12px;
+  }
+  .card-label .key {
+    width: 6px;
+    height: 6px;
+    border-radius: 2px;
+    flex: 0 0 auto;
+  }
+  .card-label .aside {
+    margin-left: auto;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--faint);
+    letter-spacing: 0;
+  }
+  .muted { color: var(--muted); }
+  .tiny { font-size: 11px; line-height: 1.5; color: var(--faint); }
+
+  /* stage accents */
+  .stage-1 .stage-num { background: var(--teal-bg); color: var(--teal); }
+  .stage-1 .key { background: var(--teal); }
+  .stage-2 .stage-num { background: var(--violet-bg); color: var(--violet); }
+  .stage-2 .key { background: var(--violet); }
+  .stage-3 .stage-num { background: var(--amber-bg); color: var(--amber); }
+  .stage-3 .key { background: var(--amber); }
+
+  /* chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 9px;
+    border: 1px solid #e4eaf2;
+    border-radius: 8px;
+    background: #f8fafc;
+    font-size: 12px;
+    font-weight: 600;
+    color: #425065;
+    white-space: nowrap;
+  }
+  .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--teal); }
+  .chip.ghost { color: #9aa5b4; background: #fafbfc; border-style: dashed; font-weight: 500; }
+  .chip.ghost .dot { background: #c0c8d3; }
+  .chip.violet { background: #faf8ff; border-color: #e7defb; color: #5835a5; }
+  .chip.violet .dot { background: var(--violet); }
+  .chip.blue { background: #f7faff; border-color: #dfe9fb; color: #294f9d; }
+  .chip.blue .dot { background: var(--blue); }
+
+  /* rows */
+  .rows { display: flex; flex-direction: column; gap: 9px; }
+  .row { display: flex; gap: 9px; align-items: flex-start; font-size: 12.5px; line-height: 1.45; color: #425065; }
+  .row .bullet {
+    margin-top: 5px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #aab6c6;
+    flex: 0 0 auto;
+  }
+  .row strong { color: var(--ink); font-weight: 700; }
+
+  /* formula box */
+  .formula {
+    margin-top: 11px;
+    padding: 10px 11px;
+    border-radius: 9px;
+    background: #f3f8f7;
+    border: 1px solid #d9ece8;
+    color: #1e625b;
+    font-size: 11.5px;
+    line-height: 1.5;
+    font-weight: 600;
+    text-align: center;
+  }
+  .formula b { font-size: 12.5px; }
+
+  /* pipeline */
+  .pipe { display: flex; align-items: center; gap: 5px; margin: 2px 0 12px; }
+  .pipe-step {
+    flex: 1;
+    text-align: center;
+    padding: 9px 4px;
+    border-radius: 8px;
+    background: var(--violet-bg);
+    border: 1px solid #e2d8fb;
+    color: #5b21b6;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.15px;
+    white-space: nowrap;
+  }
+  .pipe-arrow { color: #9a79e8; font-size: 13px; font-weight: 700; }
+
+  /* data layer */
+  .data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .data-box {
+    border: 1px solid #e3eaf4;
+    border-radius: 10px;
+    background: #f8faff;
+    padding: 10px 11px;
+  }
+  .data-box .name { font-size: 12.5px; font-weight: 750; color: #244184; }
+  .data-box .desc { margin-top: 3px; font-size: 10.5px; line-height: 1.45; color: #6a7891; }
+  .table-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 9px; }
+  .table-tags span {
+    font-size: 9.5px;
+    line-height: 1;
+    padding: 4px 5px;
+    border-radius: 5px;
+    background: #edf3ff;
+    color: #4e6593;
+    white-space: nowrap;
+  }
+
+  /* services */
+  .service-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .service {
+    border: 1px solid #e7edf5;
+    border-radius: 9px;
+    padding: 9px 10px;
+    background: #fbfcfe;
+  }
+  .service .s-name { font-size: 11.5px; font-weight: 750; color: #334155; }
+  .service .s-desc { margin-top: 3px; font-size: 10px; line-height: 1.4; color: #7a8798; }
+
+  /* API + client */
+  .api-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border-radius: 9px;
+    background: #fffaf2;
+    border: 1px solid #f4e4ca;
+  }
+  .api-badge { font-size: 11.5px; font-weight: 750; color: #8a4b0f; }
+  .api-meta { font-size: 10px; color: #a87745; }
+  .api-meta b { color: #8a4b0f; font-weight: 700; }
+  .client-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+  .client-copy { flex: 1; min-width: 0; }
+  .client-name { font-size: 14px; font-weight: 750; color: #9f1239; }
+  .screen-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .screen-list span {
+    padding: 5px 7px;
+    border-radius: 6px;
+    background: var(--rose-bg);
+    color: #a51c45;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .phone {
+    width: 72px;
+    height: 124px;
+    flex: 0 0 auto;
+    border: 2px solid #cbd5e1;
+    border-radius: 15px;
+    background: #fff;
+    padding: 8px 6px 6px;
+    box-shadow: 0 5px 12px rgba(23, 32, 51, 0.06);
+  }
+  .phone .notch { width: 20px; height: 3px; border-radius: 3px; background: #dbe2ec; margin: 0 auto 7px; }
+  .phone .bar { height: 5px; border-radius: 3px; background: #f1f5f9; margin-bottom: 5px; }
+  .phone .bar.hot { background: #f9d7e3; }
+  .phone .bar.short { width: 70%; }
+  .phone .bar.tinybar { width: 50%; }
+
+  /* flow arrows between columns */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding-top: 40px;
+  }
+  .flow-label {
+    font-size: 9.5px;
+    color: var(--faint);
+    writing-mode: vertical-rl;
+    letter-spacing: 1.4px;
+    font-weight: 600;
+  }
+  .flow-arrow {
+    width: 100%;
+    height: 26px;
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .flow-arrow::before {
+    content: "";
+    width: 100%;
+    height: 1.5px;
+    background: #c7d2e0;
+  }
+  .flow-arrow::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    width: 7px;
+    height: 7px;
+    border-top: 1.5px solid #c7d2e0;
+    border-right: 1.5px solid #c7d2e0;
+    transform: rotate(45deg);
+  }
+
+  /* ---------- core loop ---------- */
+  .loop {
+    flex: 0 0 auto;
+    margin-top: 14px;
+    height: 82px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 18px;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: 0 6px 18px rgba(23, 32, 51, 0.035);
+  }
+  .loop-title {
+    width: 104px;
+    flex: 0 0 auto;
+    padding-right: 16px;
+    border-right: 1px solid #e8edf4;
+  }
+  .loop-title .kicker {
+    font-size: 8.5px;
+    font-weight: 800;
+    letter-spacing: 1.5px;
+    color: #8b97a8;
+  }
+  .loop-title .name {
+    margin-top: 3px;
+    font-size: 14px;
+    font-weight: 750;
+    color: #2c3a4e;
+  }
+  .loop-step {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 5px;
+    border: 1px solid #e4eaf2;
+    border-radius: 8px;
+    background: #f9fbfd;
+    text-align: center;
+    font-size: 11px;
+    line-height: 1.2;
+    font-weight: 700;
+    color: #455267;
+    white-space: nowrap;
+  }
+  .loop-step small {
+    display: block;
+    margin-top: 3px;
+    font-size: 9px;
+    line-height: 1.2;
+    font-weight: 500;
+    color: #8b97a8;
+  }
+  .loop-step.relation {
+    background: #f1f9f7;
+    border-color: #d4ebe6;
+    color: #1e625b;
+  }
+  .loop-step.relation small { color: #5b8e88; }
+  .loop-step.score {
+    background: #fff9f0;
+    border-color: #f1e2c9;
+    color: #8a4b0f;
+  }
+  .loop-step.score small { color: #a87745; }
+  .loop-arrow {
+    flex: 0 0 auto;
+    color: #b8c3d1;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  /* ---------- ops band ---------- */
+  .ops {
+    flex: 0 0 auto;
+    margin-top: 14px;
+    border-radius: 15px;
+    background: #162132;
+    border: 1px solid #26364d;
+    padding: 16px 20px 15px;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    color: #e8eef7;
+    box-shadow: 0 10px 24px rgba(22, 33, 50, 0.12);
+  }
+  .ops-title {
+    width: 126px;
+    flex: 0 0 auto;
+    padding-right: 16px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border-right: 1px solid #2c3c53;
+  }
+  .ops-title .kicker {
+    font-size: 9px;
+    font-weight: 750;
+    letter-spacing: 1.6px;
+    color: #6ee7d4;
+  }
+  .ops-title .name { margin-top: 4px; font-size: 15px; font-weight: 750; }
+  .ops-item {
+    flex: 1;
+    min-width: 0;
+    padding: 0 18px;
+    border-right: 1px solid #2c3c53;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .ops-item:last-child { border-right: 0; padding-right: 2px; }
+  .ops-item .o-name {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    font-weight: 750;
+    color: #f1f5f9;
+  }
+  .ops-item .o-name .o-dot { width: 5px; height: 5px; border-radius: 50%; background: #5eead4; }
+  .ops-item:nth-child(3) .o-name .o-dot { background: #c4b5fd; }
+  .ops-item:nth-child(4) .o-name .o-dot { background: #93c5fd; }
+  .ops-item:nth-child(5) .o-name .o-dot { background: #fcd34d; }
+  .ops-item .o-desc {
+    margin-top: 5px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: #9dacbf;
+  }
+
+  /* ---------- footer ---------- */
+  .footer {
+    flex: 0 0 auto;
+    height: 42px;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    padding: 0 2px;
+    color: var(--faint);
+    font-size: 10.5px;
+  }
+  .footer .rule { flex: 1; height: 1px; background: #dfe6ef; margin-bottom: 5px; }
+  .footer b { color: #5f6b7a; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="brandmark">RS</div>
+    <div>
+      <h1>Research Scout 系统架构</h1>
+      <p class="subtitle">个人投资研究助手 · 从作者定向采集到可解释的个股评分</p>
+    </div>
+    <div class="status"><span class="pulse"></span>P0 · 本地可运行</div>
+  </header>
+
+  <main class="main">
+
+    <!-- 01 采集 -->
+    <section class="stage stage-1">
+      <div class="stage-head">
+        <div class="stage-num">01</div>
+        <div class="stage-title">内容采集</div>
+        <div class="stage-en">INGEST</div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-label"><span class="key"></span>外部内容源</div>
+          <div class="chips">
+            <span class="chip"><span class="dot"></span>新浪财经</span>
+            <span class="chip"><span class="dot"></span>华尔街见闻</span>
+            <span class="chip"><span class="dot"></span>雪球 · 作者时间线</span>
+            <span class="chip"><span class="dot"></span>Mock 演示</span>
+            <span class="chip ghost"><span class="dot"></span>腾讯新闻 · 路线图</span>
+            <span class="chip ghost"><span class="dot"></span>Twitter / X · 路线图</span>
+          </div>
+          <div class="tiny" style="margin-top:10px">只抓精选作者与用户关注作者，不做论坛全站扫描。</div>
+        </div>
+
+        <div class="card">
+          <div class="card-label"><span class="key"></span>渠道适配器<span class="aside">增量 · 隔离 · 可观测</span></div>
+          <div class="rows">
+            <div class="row"><span class="bullet"></span><span><strong>增量抓取</strong>：按 external_id 与发布时间游标推进</span></div>
+            <div class="row"><span class="bullet"></span><span><strong>正文清洗</strong>：HTML 抽取、重试与限流</span></div>
+            <div class="row"><span class="bullet"></span><span><strong>失败关闭</strong>：雪球缺少 Cookie → <span class="muted">credentials_missing</span></span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label"><span class="key"></span>抓取目标</div>
+          <div class="formula"><b>系统精选 ∪ 用户关注</b><br />按作者去重 · 新关注回填最近内容</div>
+          <div class="rows" style="margin-top:10px">
+            <div class="row"><span class="bullet"></span><span>取消关注且非精选 → 停止抓取</span></div>
+            <div class="row"><span class="bullet"></span><span>支持导入雪球主页链接 / 用户 ID</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="flow">
+      <div class="flow-label">原始内容</div>
+      <div class="flow-arrow"></div>
+    </div>
+
+    <!-- 02 分析与存储 -->
+    <section class="stage stage-2">
+      <div class="stage-head">
+        <div class="stage-num">02</div>
+        <div class="stage-title">分析与存储</div>
+        <div class="stage-en">PROCESS</div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-label"><span class="key"></span>入库与去重<span class="aside">幂等优先</span></div>
+          <div class="rows">
+            <div class="row"><span class="bullet"></span><span><strong>三级去重</strong>：渠道幂等 → 内容哈希 → SimHash 转载聚类</span></div>
+            <div class="row"><span class="bullet"></span><span><strong>作者解析</strong>：<span class="muted">(channel, external_id)</span> 精确绑定，冲突不改绑</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label"><span class="key"></span>LangGraph 分析流水线<span class="aside">结构化输出</span></div>
+          <div class="pipe">
+            <div class="pipe-step">prepare</div><div class="pipe-arrow">›</div>
+            <div class="pipe-step">analyze</div><div class="pipe-arrow">›</div>
+            <div class="pipe-step">normalize</div>
+          </div>
+          <div class="chips">
+            <span class="chip violet"><span class="dot"></span>分类</span>
+            <span class="chip violet"><span class="dot"></span>方向 / 评分</span>
+            <span class="chip violet"><span class="dot"></span>摘要</span>
+            <span class="chip violet"><span class="dot"></span>关键词</span>
+            <span class="chip violet"><span class="dot"></span>股票 / 行业 / 宏观实体</span>
+          </div>
+          <div class="formula" style="background:#f7f4ff;border-color:#e6dcfb;color:#5b3fa8">LLM：OpenAI 兼容协议 · 默认 deepseek-v4-flash<br /><span style="font-weight:500">失败或 LLM_MOCK=true → 确定性规则降级</span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-label"><span class="key"></span>数据层<span class="aside">事实与快照分离</span></div>
+          <div class="data-grid">
+            <div class="data-box" style="grid-column: span 2">
+              <div class="name">PostgreSQL · 开发可用 SQLite</div>
+              <div class="desc">报告、分析、作者关系、证券、评分快照与投递记录</div>
+              <div class="table-tags">
+                <span>reports</span><span>report_analyses</span><span>authors</span><span>securities</span>
+                <span>stock_score_snapshots</span><span>report_security_feedback</span><span>digest_deliveries</span>
+              </div>
+            </div>
+            <div class="data-box">
+              <div class="name">Redis</div>
+              <div class="desc">Celery broker、缓存与限流</div>
+            </div>
+            <div class="data-box">
+              <div class="name">文件 / 备份</div>
+              <div class="desc">本地 SQLite 文件与可回滚迁移</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="flow">
+      <div class="flow-label">读写</div>
+      <div class="flow-arrow"></div>
+    </div>
+
+    <!-- 03 服务与产品 -->
+    <section class="stage stage-3">
+      <div class="stage-head">
+        <div class="stage-num">03</div>
+        <div class="stage-title">服务与产品</div>
+        <div class="stage-en">SERVE</div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-label"><span class="key"></span>领域服务<span class="aside">可解释 · 可追溯</span></div>
+          <div class="service-grid">
+            <div class="service"><div class="s-name">信息流</div><div class="s-desc">关注 / 发现 / 热门，智能排序</div></div>
+            <div class="service"><div class="s-name">关系评分</div><div class="s-desc">个股 40 · 行业 40 · 宏观 20</div></div>
+            <div class="service"><div class="s-name">快照与变化</div><div class="s-desc">1d / 7d / 30d Δ 与历史曲线</div></div>
+            <div class="service"><div class="s-name">作者抓取</div><div class="s-desc">精选 ∪ 关注，关注后回填</div></div>
+            <div class="service"><div class="s-name">每日简报</div><div class="s-desc">站内 Digest + SMTP 邮件</div></div>
+            <div class="service"><div class="s-name">反馈闭环</div><div class="s-desc">“这篇与我无关”即时重算</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label"><span class="key"></span>API 与客户端</div>
+          <div class="api-bar">
+            <span class="api-badge">FastAPI /api/v1</span>
+            <span class="api-meta">JWT · <b>OpenAPI</b> · 参数校验</span>
+          </div>
+          <div class="client-row">
+            <div class="client-copy">
+              <div class="client-name">Vue 3 + Vant</div>
+              <div class="tiny" style="margin-top:4px">移动端优先 · Pinia · Vue Router</div>
+              <div class="screen-list">
+                <span>信息流</span><span>每日简报</span><span>个股详情</span>
+                <span>自选股</span><span>作者</span><span>设置</span>
+              </div>
+            </div>
+            <div class="phone">
+              <div class="notch"></div>
+              <div class="bar hot"></div>
+              <div class="bar"></div>
+              <div class="bar short"></div>
+              <div class="bar"></div>
+              <div class="bar short"></div>
+              <div class="bar tinybar"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label"><span class="key"></span>交付形态<span class="aside">本地 / Docker</span></div>
+          <div class="rows">
+            <div class="row"><span class="bullet"></span><span><strong>Nginx</strong>：SPA 静态资源 + <span class="muted">/api</span> 反向代理</span></div>
+            <div class="row"><span class="bullet"></span><span><strong>Docker Compose</strong>：API · Worker · Beat · PostgreSQL · Redis</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 核心闭环 -->
+  <section class="loop">
+    <div class="loop-title">
+      <div class="kicker">FLOW</div>
+      <div class="name">核心闭环</div>
+    </div>
+    <div class="loop-step">内容源<small>新浪 / 见闻 / 雪球</small></div>
+    <div class="loop-arrow">→</div>
+    <div class="loop-step">增量采集<small>精选 ∪ 关注</small></div>
+    <div class="loop-arrow">→</div>
+    <div class="loop-step">去重 + 分析<small>分类 / 方向 / 实体</small></div>
+    <div class="loop-arrow">→</div>
+    <div class="loop-step relation">关系判定<small>个股 › 行业 › 宏观</small></div>
+    <div class="loop-arrow">→</div>
+    <div class="loop-step score">综合评分<small>40 / 40 / 20</small></div>
+    <div class="loop-arrow">→</div>
+    <div class="loop-step">简报与反馈<small>站内 / 邮件 / 重算</small></div>
+  </section>
+
+  <!-- 异步任务 -->
+  <section class="ops">
+    <div class="ops-title">
+      <div class="kicker">ASYNC</div>
+      <div class="name">异步与调度</div>
+    </div>
+    <div class="ops-item">
+      <div class="o-name"><span class="o-dot"></span>Celery Beat</div>
+      <div class="o-desc">06:40 作者抓取 · 06:50 评分快照<br />07:10 每日邮件</div>
+    </div>
+    <div class="ops-item">
+      <div class="o-name"><span class="o-dot"></span>Celery Worker</div>
+      <div class="o-desc">抓取 → 分析 → 快照 → 邮件<br />单任务失败隔离，不阻塞整体</div>
+    </div>
+    <div class="ops-item">
+      <div class="o-name"><span class="o-dot"></span>启动刷新</div>
+      <div class="o-desc">最近成功抓取超过 1 小时<br />服务启动后立即补跑</div>
+    </div>
+    <div class="ops-item">
+      <div class="o-name"><span class="o-dot"></span>来源健康度</div>
+      <div class="o-desc">IngestRun 记录成功 / 失败 / 抓取量<br />Cookie 仅暴露“是否配置”</div>
+    </div>
+  </section>
+
+  <div class="footer">
+    <span><b>评分约束</b>　90 天硬截断 · 关系半衰期 7 / 14 / 30 天 · 缺失关系预算按比例重分配 · 证据不足不显示综合分</span>
+    <span class="rule"></span>
+    <span>详见 docs/architecture-design.md</span>
+  </div>
+
+</div>
+</body>
+</html>
